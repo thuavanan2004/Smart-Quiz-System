@@ -32,6 +32,10 @@ dependencies {
     // --- JWT ----------------------------------------------------------------
     implementation("com.nimbusds:nimbus-jose-jwt:9.41.2")
 
+    // --- Password hashing ---------------------------------------------------
+    // Argon2id wrapper theo design §6.1. Dùng native libsodium nếu có, fallback pure-Java.
+    implementation("de.mkammerer:argon2-jvm:2.11")
+
     // --- Kafka --------------------------------------------------------------
     implementation("org.springframework.kafka:spring-kafka:3.3.0")
 
@@ -47,6 +51,7 @@ dependencies {
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.testcontainers:junit-jupiter:1.20.3")
     testImplementation("org.testcontainers:postgresql:1.20.3")
+    testImplementation("com.h2database:h2:2.3.232")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

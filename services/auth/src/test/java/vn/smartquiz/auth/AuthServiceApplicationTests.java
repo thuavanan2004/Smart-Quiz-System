@@ -13,28 +13,30 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {
-        "spring.flyway.enabled=false",
-        "spring.jpa.hibernate.ddl-auto=none",
-        "spring.datasource.url=jdbc:h2:mem:test;MODE=PostgreSQL",
-        "spring.datasource.driver-class-name=org.h2.Driver",
-        "spring.datasource.username=sa",
-        "spring.datasource.password=",
-        "auth.jwt.private-key-path=../../ops/keys/jwt.private.pem",
-        "auth.jwt.public-key-path=../../ops/keys/jwt.public.pem",
-        "auth.jwt.key-id=test-key"
-})
+@TestPropertySource(
+    properties = {
+      "spring.flyway.enabled=false",
+      "spring.jpa.hibernate.ddl-auto=none",
+      "spring.datasource.url=jdbc:h2:mem:test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE",
+      "spring.datasource.driver-class-name=org.h2.Driver",
+      "spring.datasource.username=sa",
+      "spring.datasource.password=",
+      "auth.jwt.private-key-path=../../ops/keys/jwt.private.pem",
+      "auth.jwt.public-key-path=../../ops/keys/jwt.public.pem",
+      "auth.jwt.key-id=test-key",
+      "auth.jwt.issuer=https://auth.test"
+    })
 class AuthServiceApplicationTests {
 
-    @Autowired
-    private MockMvc mockMvc;
+  @Autowired private MockMvc mockMvc;
 
-    @Test
-    void jwksEndpointReturnsPublicKey() throws Exception {
-        mockMvc.perform(get("/.well-known/jwks.json"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.keys[0].kty").value("RSA"))
-                .andExpect(jsonPath("$.keys[0].alg").value("RS256"))
-                .andExpect(jsonPath("$.keys[0].kid").value("test-key"));
-    }
+  @Test
+  void jwksEndpointReturnsPublicKey() throws Exception {
+    mockMvc
+        .perform(get("/.well-known/jwks.json"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.keys[0].kty").value("RSA"))
+        .andExpect(jsonPath("$.keys[0].alg").value("RS256"))
+        .andExpect(jsonPath("$.keys[0].kid").value("test-key"));
+  }
 }

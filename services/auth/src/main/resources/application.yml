@@ -1,6 +1,9 @@
 spring:
   application:
     name: auth-service
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/smartquiz}
     username: ${DB_USER:smartquiz}
@@ -10,7 +13,10 @@ spring:
       minimum-idle: 5
   jpa:
     hibernate:
-      ddl-auto: validate
+      # Schema quản lý bởi Flyway — Hibernate không suy diễn/validate để tránh sai khớp
+      # type mapping (CITEXT, INET) giữa Postgres và Hibernate defaults.
+      ddl-auto: none
+    open-in-view: false
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
@@ -69,8 +75,12 @@ auth:
     public-key-path: ${JWT_PUBLIC_KEY_PATH:../../ops/keys/jwt.public.pem}
     key-id: ${JWT_KEY_ID:2026-04-key1}
     issuer: ${JWT_ISSUER:https://auth.smartquiz.vn}
+    audience: ${JWT_AUDIENCE:smartquiz-api}
     access-ttl-seconds: 900
     refresh-ttl-days: 7
+  # Dev-only: trả token verify_email trong response /auth/register để test không cần SMTP.
+  # KHÔNG bật ở prod (rò rỉ token qua response log).
+  dev-expose-verification-token: ${AUTH_DEV_EXPOSE_VERIFY_TOKEN:false}
 
 logging:
   level:

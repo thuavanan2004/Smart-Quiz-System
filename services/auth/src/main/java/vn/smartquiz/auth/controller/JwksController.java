@@ -1,5 +1,7 @@
 package vn.smartquiz.auth.controller;
 
+import com.nimbusds.jose.jwk.JWKMatcher;
+import com.nimbusds.jose.jwk.JWKSelector;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
@@ -13,17 +15,19 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class JwksController {
 
-    private final JWKSource<SecurityContext> jwkSource;
+  private static final JWKSelector MATCH_ALL = new JWKSelector(new JWKMatcher.Builder().build());
 
-    public JwksController(JWKSource<SecurityContext> jwkSource) {
-        this.jwkSource = jwkSource;
-    }
+  private final JWKSource<SecurityContext> jwkSource;
 
-    @GetMapping(path = "/.well-known/jwks.json", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Map<String, Object>> jwks() throws Exception {
-        JWKSet jwks = new JWKSet(jwkSource.get(null, null));
-        return ResponseEntity.ok()
-                .cacheControl(CacheControl.maxAge(java.time.Duration.ofHours(1)).cachePublic())
-                .body(jwks.toPublicJWKSet().toJSONObject());
-    }
+  public JwksController(JWKSource<SecurityContext> jwkSource) {
+    this.jwkSource = jwkSource;
+  }
+
+  @GetMapping(path = "/.well-known/jwks.json", produces = MediaType.APPLICATION_JSON_VALUE)
+  public ResponseEntity<Map<String, Object>> jwks() throws Exception {
+    JWKSet jwks = new JWKSet(jwkSource.get(MATCH_ALL, null));
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.maxAge(java.time.Duration.ofHours(1)).cachePublic())
+        .body(jwks.toPublicJWKSet().toJSONObject());
+  }
 }
