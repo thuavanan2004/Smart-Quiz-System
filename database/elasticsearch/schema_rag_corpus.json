@@ -1,0 +1,54 @@
+{
+    "_comment": "AI Service RAG corpus - tài liệu curriculum / textbook để LLM retrieve khi sinh câu hỏi. Tạo bằng: curl -X PUT http://localhost:9200/rag_corpus -H 'Content-Type: application/json' -d @schema_rag_corpus.json. PROD: (1) tạo ILM policy `rag_corpus_ilm` với rollover 50GB hoặc 30 ngày trước khi tạo index; (2) dùng alias + data stream thay vì index name cố định để ILM rollover hoạt động; (3) cài plugin analysis-vietnamese / ICU cho tokenizer tiếng Việt.",
+    "settings": {
+        "number_of_shards": 3,
+        "number_of_replicas": 1,
+        "refresh_interval": "30s",
+        "index.lifecycle.name": "rag_corpus_ilm",
+        "index.lifecycle.rollover_alias": "rag_corpus",
+        "analysis": {
+            "filter": {
+                "vi_stop": {
+                    "type": "stop",
+                    "stopwords": ["và", "của", "là", "có", "cho", "với", "trong", "một", "các", "để", "này", "đó"]
+                }
+            },
+            "analyzer": {
+                "vi_analyzer": {
+                    "type": "custom",
+                    "tokenizer": "standard",
+                    "filter": ["lowercase", "vi_stop"]
+                }
+            }
+        }
+    },
+    "mappings": {
+        "properties": {
+            "chunk_id":      { "type": "keyword" },
+            "corpus_id":     { "type": "keyword" },
+            "source_doc":    { "type": "keyword" },
+            "subject_code":  { "type": "keyword" },
+            "topic":         { "type": "keyword" },
+            "language":      { "type": "keyword" },
+
+            "text": {
+                "type": "text",
+                "analyzer": "vi_analyzer"
+            },
+            "tokens_count":  { "type": "integer" },
+            "chunk_index":   { "type": "integer" },
+
+            "embedding": {
+                "type": "dense_vector",
+                "dims": 1536,
+                "index": true,
+                "similarity": "cosine",
+                "index_options": { "type": "hnsw", "m": 16, "ef_construction": 100 }
+            },
+
+            "created_by":  { "type": "keyword" },
+            "created_at":  { "type": "date" },
+            "updated_at":  { "type": "date" }
+        }
+    }
+}

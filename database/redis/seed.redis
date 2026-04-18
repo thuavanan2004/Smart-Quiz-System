@@ -1,0 +1,130 @@
+# =============================================================================
+# SMART QUIZ SYSTEM - REDIS SEED DATA
+# =============================================================================
+# Chạy:
+#   redis-cli -h localhost -p 6379 < seed.redis
+# Hoặc:
+#   cat seed.redis | redis-cli
+# =============================================================================
+# Dữ liệu mẫu phản ánh trạng thái tại thời điểm seed:
+# - 1 lượt thi đang diễn ra (attempt f0000000-...0003)
+# - 2 lượt thi đã xong (đã có trên leaderboard)
+# - Vài cache key, rate limit, OTP để test.
+# =============================================================================
+
+FLUSHDB
+
+# -----------------------------------------------------------------------------
+# Nhóm 1: Session bài thi đang diễn ra (attempt 0003, exam 0002)
+# -----------------------------------------------------------------------------
+HSET session:f0000000-0000-0000-0000-000000000003 remaining_seconds 1200 current_q_idx 1 risk_score 0 status in_progress last_heartbeat 1745000000
+EXPIRE session:f0000000-0000-0000-0000-000000000003 1800
+
+HSET answers:f0000000-0000-0000-0000-000000000003 q-66666666-6666-6666-6666-666666666666 "{\"selected_options\":[\"opt_c\"]}"
+EXPIRE answers:f0000000-0000-0000-0000-000000000003 9000
+
+RPUSH q_order:f0000000-0000-0000-0000-000000000003 q-66666666-6666-6666-6666-666666666666 q-77777777-7777-7777-7777-777777777777
+EXPIRE q_order:f0000000-0000-0000-0000-000000000003 9000
+
+SET user:online:a0000000-0000-0000-0000-000000000006 f0000000-0000-0000-0000-000000000003 EX 30
+
+SADD exam:concurrent:c0000000-0000-0000-0000-000000000002 f0000000-0000-0000-0000-000000000003
+EXPIRE exam:concurrent:c0000000-0000-0000-0000-000000000002 3600
+
+# -----------------------------------------------------------------------------
+# Nhóm 2: Cache nóng
+# -----------------------------------------------------------------------------
+SET exam:config:c0000000-0000-0000-0000-000000000001 "{\"id\":\"c0000000-0000-0000-0000-000000000001\",\"title\":\"Kiểm Tra Giữa Kỳ - Thuật Toán Sắp Xếp\",\"duration_minutes\":60,\"total_points\":100,\"shuffle_questions\":true}" EX 1800
+
+RPUSH exam:q_ids:c0000000-0000-0000-0000-000000000001 q-11111111-1111-1111-1111-111111111111 q-22222222-2222-2222-2222-222222222222 q-33333333-3333-3333-3333-333333333333 q-44444444-4444-4444-4444-444444444444 q-55555555-5555-5555-5555-555555555555
+EXPIRE exam:q_ids:c0000000-0000-0000-0000-000000000001 1800
+
+SET question:q-11111111-1111-1111-1111-111111111111:1 "{\"question_id\":\"q-11111111-1111-1111-1111-111111111111\",\"type\":\"multiple_choice_single\",\"text\":\"Thuật toán sắp xếp nào có độ phức tạp O(n log n)?\"}" EX 7200
+
+HSET user:profile:a0000000-0000-0000-0000-000000000004 name "Lê Minh Cường" email "hs.le@hust.edu.vn" role "student" org_id "11111111-1111-1111-1111-111111111111"
+EXPIRE user:profile:a0000000-0000-0000-0000-000000000004 900
+
+SET org:settings:11111111-1111-1111-1111-111111111111 "{\"logo\":\"https://cdn.example.com/hust.png\",\"primary_color\":\"#B71C1C\"}" EX 3600
+
+# -----------------------------------------------------------------------------
+# Nhóm 3: Rate limit & bảo mật
+# -----------------------------------------------------------------------------
+SET rate:login:171.230.12.45 2 EX 900
+SET rate:api:a0000000-0000-0000-0000-000000000004:/api/exams 15 EX 60
+SET rate:ai_gen:11111111-1111-1111-1111-111111111111 8 EX 86400
+
+SET otp:a0000000-0000-0000-0000-000000000004:verify_email 483927 EX 600
+SET token:blacklist:jwt_jti_abc123 revoked EX 900
+
+# -----------------------------------------------------------------------------
+# Nhóm 5: Leaderboard & exam stats
+# -----------------------------------------------------------------------------
+ZADD leaderboard:c0000000-0000-0000-0000-000000000001 85 a0000000-0000-0000-0000-000000000004
+ZADD leaderboard:c0000000-0000-0000-0000-000000000001 45 a0000000-0000-0000-0000-000000000005
+EXPIRE leaderboard:c0000000-0000-0000-0000-000000000001 604800
+
+HSET exam:stats:c0000000-0000-0000-0000-000000000001 attempt_count 2 avg_score 65 pass_count 1 fail_count 1
+HSET exam:stats:c0000000-0000-0000-0000-000000000002 attempt_count 1 avg_score 0  pass_count 0 fail_count 0
+
+SADD active_exams:11111111-1111-1111-1111-111111111111 c0000000-0000-0000-0000-000000000001 c0000000-0000-0000-0000-000000000002
+
+# -----------------------------------------------------------------------------
+# Nhóm 4: Publish một thông báo test
+# -----------------------------------------------------------------------------
+PUBLISH notification:a0000000-0000-0000-0000-000000000004 "{\"type\":\"cert_issued\",\"cert_number\":\"HUST-CS101-2026-0001\"}"
+
+# -----------------------------------------------------------------------------
+# Nhóm 6: AI Service (budget + job + embed cache + rate limit)
+# -----------------------------------------------------------------------------
+SET ai:cost:11111111-1111-1111-1111-111111111111:2026-04 87.35 EX 3024000
+SET ai:cost:22222222-2222-2222-2222-222222222222:2026-04 12.50 EX 3024000
+SET ai:cost:33333333-3333-3333-3333-333333333333:2026-04 2.05  EX 3024000
+
+SET ai:ratelimit:11111111-1111-1111-1111-111111111111:generate 3 EX 60
+SET ai:ratelimit:11111111-1111-1111-1111-111111111111:embed    12 EX 60
+
+SET ai:job:aaaa0003-0000-0000-0000-000000000003 "{\"status\":\"pending\",\"queued_at\":1745000000}" EX 3600
+SET ai:job:aaaa0004-0000-0000-0000-000000000004 "{\"status\":\"running\",\"progress\":0.32}" EX 3600
+
+# Cache embedding một câu hỏi mẫu (base64 vector giả 8 dim)
+SET ai:embed:c4ca4238a0b923820dcc509a6f75849b:text-embedding-3-large "BASE64_VECTOR_PLACEHOLDER" EX 86400
+
+# Moderation cache (đã check text, không có vi phạm)
+SET ai:mod:e4da3b7fbbce2345d7772b0674a318d5 "{\"flagged\":false,\"categories\":{}}" EX 21600
+
+# -----------------------------------------------------------------------------
+# Nhóm 7: Cheating Detection (risk score + baseline typing + attempt IPs)
+# -----------------------------------------------------------------------------
+# Attempt đang thi (attempt 0003) - score hiện 0
+HSET risk:f0000000-0000-0000-0000-000000000003 total 0 events "[]" last_update 1745000000
+EXPIRE risk:f0000000-0000-0000-0000-000000000003 7200
+
+# Attempt đã kết thúc với điểm 18 (giữ lại để review)
+HSET risk:f0000000-0000-0000-0000-000000000002 total 18 events "[{\"type\":\"tab_switch\",\"w\":3},{\"type\":\"copy_event\",\"w\":5},{\"type\":\"devtools_open\",\"w\":10}]" last_update 1744885200
+EXPIRE risk:f0000000-0000-0000-0000-000000000002 3600
+
+# Baseline typing của 2 student (từ 5 lần thi đầu)
+HSET baseline:typing:a0000000-0000-0000-0000-000000000004 mean_kpi 185.5 stddev 22.3 samples 5
+HSET baseline:typing:a0000000-0000-0000-0000-000000000005 mean_kpi 210.2 stddev 35.1 samples 5
+
+# IPs đã thấy của attempt đang thi
+SADD attempt:ips:f0000000-0000-0000-0000-000000000003 171.230.12.46
+
+# Geo của attempt
+HSET attempt:geo:f0000000-0000-0000-0000-000000000003 country VN city "Hà Nội" lat 21.028 lon 105.804
+EXPIRE attempt:geo:f0000000-0000-0000-0000-000000000003 3600
+
+# Proctor queue
+RPUSH proctor:queue:a0000000-0000-0000-0000-000000000007 f0000000-0000-0000-0000-000000000003
+EXPIRE proctor:queue:a0000000-0000-0000-0000-000000000007 3600
+
+# =============================================================================
+# VERIFY
+# =============================================================================
+DBSIZE
+
+# Dùng các lệnh sau để kiểm tra (chạy trực tiếp trên redis-cli):
+# SCAN 0 MATCH '*' COUNT 100
+# HGETALL session:f0000000-0000-0000-0000-000000000003
+# ZRANGE leaderboard:c0000000-0000-0000-0000-000000000001 0 -1 WITHSCORES
+# SMEMBERS active_exams:11111111-1111-1111-1111-111111111111

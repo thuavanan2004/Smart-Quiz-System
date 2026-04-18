@@ -1,0 +1,66 @@
+{
+    "_comment": "Smart Quiz System - Elasticsearch 8 index mapping. Chạy bằng: curl -X PUT http://localhost:9200/question_search -H 'Content-Type: application/json' -d @schema.json. PROD: cân nhắc cài plugin analysis-vietnamese hoặc ICU để tokenize từ ghép tiếng Việt (hiện dùng standard tokenizer là baseline).",
+    "settings": {
+        "number_of_shards": 3,
+        "number_of_replicas": 1,
+        "refresh_interval": "30s",
+        "analysis": {
+            "filter": {
+                "vi_stop": {
+                    "type": "stop",
+                    "stopwords": ["và", "của", "là", "có", "cho", "với", "trong", "một", "các", "để", "này", "đó"]
+                }
+            },
+            "analyzer": {
+                "vi_analyzer": {
+                    "type": "custom",
+                    "tokenizer": "standard",
+                    "filter": ["lowercase", "vi_stop"]
+                }
+            }
+        }
+    },
+    "mappings": {
+        "properties": {
+            "question_id":    { "type": "keyword" },
+            "org_id":         { "type": "keyword" },
+            "status":         { "type": "keyword" },
+            "type":           { "type": "keyword" },
+            "subject_code":   { "type": "keyword" },
+            "tags":           { "type": "keyword" },
+            "bloom_level":    { "type": "keyword" },
+            "language":       { "type": "keyword" },
+
+            "content_text": {
+                "type": "text",
+                "analyzer": "vi_analyzer",
+                "fields": { "raw": { "type": "keyword", "ignore_above": 512 } }
+            },
+            "topic": {
+                "type": "text",
+                "analyzer": "vi_analyzer"
+            },
+            "explanation": {
+                "type": "text",
+                "analyzer": "vi_analyzer"
+            },
+
+            "difficulty_irt":  { "type": "float" },
+            "discrimination":  { "type": "float" },
+            "correct_rate":    { "type": "float" },
+            "times_used":      { "type": "integer" },
+            "ai_quality_score":{ "type": "integer" },
+
+            "embedding": {
+                "type": "dense_vector",
+                "dims": 1536,
+                "index": true,
+                "similarity": "cosine",
+                "index_options": { "type": "hnsw", "m": 16, "ef_construction": 100 }
+            },
+
+            "created_at":  { "type": "date" },
+            "updated_at":  { "type": "date" }
+        }
+    }
+}

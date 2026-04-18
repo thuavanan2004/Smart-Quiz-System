@@ -1,0 +1,33 @@
+{
+    "_comment": "ILM policy cho rag_corpus. Tạo TRƯỚC khi tạo index: curl -X PUT http://localhost:9200/_ilm/policy/rag_corpus_ilm -H 'Content-Type: application/json' -d @ilm_rag_corpus.json. Sau đó tạo data stream: PUT _data_stream/rag_corpus. Index tự rollover khi đạt 50GB hoặc 30 ngày, chuyển sang warm sau 60 ngày, xoá sau 2 năm.",
+    "policy": {
+        "phases": {
+            "hot": {
+                "actions": {
+                    "rollover": {
+                        "max_primary_shard_size": "50gb",
+                        "max_age": "30d"
+                    }
+                }
+            },
+            "warm": {
+                "min_age": "60d",
+                "actions": {
+                    "forcemerge": { "max_num_segments": 1 },
+                    "shrink":     { "number_of_shards": 1 },
+                    "set_priority": { "priority": 50 }
+                }
+            },
+            "cold": {
+                "min_age": "180d",
+                "actions": {
+                    "set_priority": { "priority": 0 }
+                }
+            },
+            "delete": {
+                "min_age": "730d",
+                "actions": { "delete": {} }
+            }
+        }
+    }
+}
