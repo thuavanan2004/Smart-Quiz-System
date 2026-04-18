@@ -16,7 +16,7 @@ import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -25,25 +25,23 @@ import org.springframework.context.annotation.Configuration;
  * (xem ADR-001 §Implementation notes và auth-service-design.md §13.5).
  */
 @Configuration
+@EnableConfigurationProperties({AuthJwtProperties.class, AuthDevProperties.class})
 public class JwkConfig {
 
-  @Value("${auth.jwt.private-key-path}")
-  private Path privateKeyPath;
+  private final AuthJwtProperties props;
 
-  @Value("${auth.jwt.public-key-path}")
-  private Path publicKeyPath;
-
-  @Value("${auth.jwt.key-id}")
-  private String keyId;
+  public JwkConfig(AuthJwtProperties props) {
+    this.props = props;
+  }
 
   @Bean
   public RSAPublicKey rsaPublicKey() throws Exception {
-    return loadPublicKey(publicKeyPath);
+    return loadPublicKey(props.publicKeyPath());
   }
 
   @Bean
   public RSAPrivateKey rsaPrivateKey() throws Exception {
-    return loadPrivateKey(privateKeyPath);
+    return loadPrivateKey(props.privateKeyPath());
   }
 
   @Bean
@@ -51,7 +49,7 @@ public class JwkConfig {
     RSAKey rsaKey =
         new RSAKey.Builder(publicKey)
             .privateKey(privateKey)
-            .keyID(keyId)
+            .keyID(props.keyId())
             .algorithm(JWSAlgorithm.RS256)
             .keyUse(KeyUse.SIGNATURE)
             .build();

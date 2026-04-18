@@ -8,8 +8,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Opaque refresh token (64 byte random). Lưu SHA-256 hash (BYTEA). Slice 1 chỉ insert lúc login;
- * endpoint /auth/refresh + rotation để slice 2.
+ * Opaque refresh token (64 byte random). Lưu SHA-256 hash (BYTEA). Cột `active_org_id` cho phép
+ * refresh + switch-org giữ đúng ngữ cảnh org đang active (xem migration V1776540000).
  */
 @Entity
 @Table(name = "refresh_tokens")
@@ -28,6 +28,9 @@ public class RefreshToken {
   @Column(name = "user_agent")
   private String userAgent;
 
+  @Column(name = "active_org_id")
+  private UUID activeOrgId;
+
   @Column(name = "expires_at", nullable = false)
   private Instant expiresAt;
 
@@ -43,16 +46,31 @@ public class RefreshToken {
   protected RefreshToken() {}
 
   public static RefreshToken issue(
-      UUID userId, byte[] tokenHash, String userAgent, Instant now, Instant expiresAt) {
+      UUID userId,
+      byte[] tokenHash,
+      String userAgent,
+      UUID activeOrgId,
+      Instant now,
+      Instant expiresAt) {
     RefreshToken rt = new RefreshToken();
     rt.id = UUID.randomUUID();
     rt.userId = userId;
     rt.tokenHash = tokenHash;
     rt.userAgent = userAgent;
+    rt.activeOrgId = activeOrgId;
     rt.expiresAt = expiresAt;
     rt.revoked = false;
     rt.createdAt = now;
     return rt;
+  }
+
+  public void revoke(Instant now) {
+    this.revoked = true;
+    this.revokedAt = now;
+  }
+
+  public boolean isUsable(Instant now) {
+    return !revoked && expiresAt.isAfter(now);
   }
 
   public UUID getId() {
@@ -67,11 +85,27 @@ public class RefreshToken {
     return tokenHash;
   }
 
+  public String getUserAgent() {
+    return userAgent;
+  }
+
+  public UUID getActiveOrgId() {
+    return activeOrgId;
+  }
+
   public Instant getExpiresAt() {
     return expiresAt;
   }
 
+  public Instant getCreatedAt() {
+    return createdAt;
+  }
+
   public boolean isRevoked() {
     return revoked;
+  }
+
+  public Instant getRevokedAt() {
+    return revokedAt;
   }
 }

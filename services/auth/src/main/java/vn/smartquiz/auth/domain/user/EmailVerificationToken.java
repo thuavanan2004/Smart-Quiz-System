@@ -8,7 +8,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Token verify email / reset password. `token_hash` = SHA-256 hex của plaintext 32 bytes random.
+ * Token verify email / reset password. `token_hash` = SHA-256 raw (32 bytes, BYTEA) của plaintext
+ * 32 bytes random. Schema V0001 dùng BYTEA (xem design §4.3 bản rev mới).
  */
 @Entity
 @Table(name = "email_verification_tokens")
@@ -19,7 +20,7 @@ public class EmailVerificationToken {
 
   @Id
   @Column(name = "token_hash")
-  private String tokenHash;
+  private byte[] tokenHash;
 
   @Column(name = "user_id", nullable = false)
   private UUID userId;
@@ -39,7 +40,7 @@ public class EmailVerificationToken {
   protected EmailVerificationToken() {}
 
   public static EmailVerificationToken issue(
-      UUID userId, String tokenHash, String purpose, Instant now, Instant expiresAt) {
+      UUID userId, byte[] tokenHash, String purpose, Instant now, Instant expiresAt) {
     EmailVerificationToken t = new EmailVerificationToken();
     t.tokenHash = tokenHash;
     t.userId = userId;
@@ -57,7 +58,7 @@ public class EmailVerificationToken {
     this.usedAt = now;
   }
 
-  public String getTokenHash() {
+  public byte[] getTokenHash() {
     return tokenHash;
   }
 

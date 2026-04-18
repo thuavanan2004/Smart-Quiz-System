@@ -27,7 +27,7 @@ public class VerifyEmailUseCase {
 
   @Transactional
   public void execute(String tokenPlain) {
-    String tokenHash = TokenHashing.sha256Hex(tokenPlain);
+    byte[] tokenHash = TokenHashing.sha256Raw(tokenPlain);
     EmailVerificationToken token =
         verificationRepo
             .findByTokenHashAndPurpose(tokenHash, EmailVerificationToken.PURPOSE_VERIFY_EMAIL)

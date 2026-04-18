@@ -3,18 +3,16 @@ package vn.smartquiz.auth.application;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 
-/** Hash tiện ích cho token opaque (email verify). Plaintext không được log. */
+/** Hash tiện ích cho token opaque (email verify, password reset). Plaintext không được log. */
 final class TokenHashing {
 
   private TokenHashing() {}
 
-  static String sha256Hex(String input) {
+  // V0001 baseline lưu token_hash dưới dạng BYTEA raw (32 bytes) — nhẹ + so sánh nhanh hơn hex.
+  static byte[] sha256Raw(String input) {
     try {
-      byte[] digest =
-          MessageDigest.getInstance("SHA-256").digest(input.getBytes(StandardCharsets.UTF_8));
-      return HexFormat.of().formatHex(digest);
+      return MessageDigest.getInstance("SHA-256").digest(input.getBytes(StandardCharsets.UTF_8));
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 unavailable", e);
     }

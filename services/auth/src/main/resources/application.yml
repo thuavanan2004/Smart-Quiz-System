@@ -1,6 +1,10 @@
 spring:
   application:
     name: auth-service
+  # Graceful shutdown — Tomcat từ chối request mới, hoàn thành in-flight tối đa 30s rồi exit.
+  # K8s SIGTERM → terminationGracePeriodSeconds ≥ 35s để cover.
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   jackson:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: non_null
@@ -42,6 +46,7 @@ spring:
 
 server:
   port: 3001
+  shutdown: graceful
   forward-headers-strategy: framework
   error:
     include-message: always
@@ -78,9 +83,18 @@ auth:
     audience: ${JWT_AUDIENCE:smartquiz-api}
     access-ttl-seconds: 900
     refresh-ttl-days: 7
-  # Dev-only: trả token verify_email trong response /auth/register để test không cần SMTP.
-  # KHÔNG bật ở prod (rò rỉ token qua response log).
-  dev-expose-verification-token: ${AUTH_DEV_EXPOSE_VERIFY_TOKEN:false}
+  # Dev-only: trả token verify_email + reset_password trong response (/auth/register,
+  # /auth/password/forgot) để test không cần SMTP. KHÔNG bật ở prod — rò rỉ token.
+  dev:
+    expose-verification-token: ${AUTH_DEV_EXPOSE_VERIFY_TOKEN:false}
+    expose-reset-token: ${AUTH_DEV_EXPOSE_RESET_TOKEN:false}
+  rate-limit:
+    # Tắt chỉ khi test hoặc dev cần spam endpoint. Prod LUÔN bật.
+    enabled: ${AUTH_RATE_LIMIT_ENABLED:true}
+  cors:
+    # CSV các origin cho phép. KHÔNG để "*" ở prod (Iron Rule #6 + design §13.2).
+    # Dev mặc định cho Next.js local.
+    allowed-origins: ${AUTH_CORS_ORIGINS:http://localhost:3000,http://localhost:3333}
 
 logging:
   level:

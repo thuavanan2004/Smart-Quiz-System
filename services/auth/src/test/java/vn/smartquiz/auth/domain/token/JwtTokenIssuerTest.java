@@ -12,12 +12,14 @@ import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.SignedJWT;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import vn.smartquiz.auth.config.AuthJwtProperties;
 
 class JwtTokenIssuerTest {
 
@@ -28,7 +30,16 @@ class JwtTokenIssuerTest {
   static void init() throws Exception {
     keypair = new RSAKeyGenerator(2048).keyID("test-key").keyUse(KeyUse.SIGNATURE).generate();
     JWKSource<SecurityContext> src = new ImmutableJWKSet<>(new JWKSet(keypair));
-    issuer = new JwtTokenIssuer(src, "https://auth.test", 900, "smartquiz-api");
+    AuthJwtProperties props =
+        new AuthJwtProperties(
+            Path.of("/tmp/priv"),
+            Path.of("/tmp/pub"),
+            "test-key",
+            "https://auth.test",
+            "smartquiz-api",
+            900L,
+            7);
+    issuer = new JwtTokenIssuer(src, props);
   }
 
   @Test
@@ -36,10 +47,12 @@ class JwtTokenIssuerTest {
     UUID userId = UUID.randomUUID();
     Instant now = Clock.systemUTC().instant();
 
+    UUID sessionId = UUID.randomUUID();
     var token =
         issuer.issueAccessToken(
             new JwtTokenIssuer.AccessTokenInput(
                 userId,
+                sessionId,
                 "alice@test.vn",
                 true,
                 null,
@@ -61,6 +74,7 @@ class JwtTokenIssuerTest {
     assertThat(claims.getStringClaim("email")).isEqualTo("alice@test.vn");
     assertThat(claims.getBooleanClaim("email_verified")).isTrue();
     assertThat(claims.getStringClaim("token_type")).isEqualTo("access");
+    assertThat(claims.getStringClaim("sid")).isEqualTo(sessionId.toString());
     assertThat(claims.getStringListClaim("authorities"))
         .containsExactly("attempt.start", "analytics.self");
   }

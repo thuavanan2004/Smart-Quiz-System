@@ -118,6 +118,36 @@ public class User {
     this.updatedAt = now;
   }
 
+  /**
+   * Đổi mật khẩu. Reset failed counter + unlock (design §9.2: login thành công reset, đổi pwd cũng
+   * coi như recovery). Caller phải tự insert {@link PasswordHistory} + revoke refresh token.
+   */
+  public void changePassword(String newPasswordHash, Instant now) {
+    this.passwordHash = newPasswordHash;
+    this.failedLoginCount = 0;
+    this.lockedUntil = null;
+    this.updatedAt = now;
+  }
+
+  /** Admin lock manually — {@code until=null} nghĩa là khóa vô thời hạn. */
+  public void lockManually(Instant until, Instant now) {
+    // Dùng mốc rất xa (100 năm) làm "vĩnh viễn" để không phải phân biệt null ở mọi check.
+    this.lockedUntil = until != null ? until : now.plus(Duration.ofDays(36500));
+    this.updatedAt = now;
+  }
+
+  public void unlock(Instant now) {
+    this.failedLoginCount = 0;
+    this.lockedUntil = null;
+    this.updatedAt = now;
+  }
+
+  public void softDelete(Instant now) {
+    this.active = false;
+    this.deletedAt = now;
+    this.updatedAt = now;
+  }
+
   // ---- Getters ------------------------------------------------------------
 
   public UUID getId() {

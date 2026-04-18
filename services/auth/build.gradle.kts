@@ -41,6 +41,8 @@ dependencies {
 
     // --- Observability ------------------------------------------------------
     implementation("io.micrometer:micrometer-registry-prometheus:1.14.1")
+    // JSON structured logging (design §14.3). Bật qua Spring profile != dev; dev vẫn dùng text.
+    implementation("net.logstash.logback:logstash-logback-encoder:8.0")
 
     // --- Lombok (chỉ các annotation được CLAUDE.md cho phép) ----------------
     compileOnly("org.projectlombok:lombok:1.18.34")

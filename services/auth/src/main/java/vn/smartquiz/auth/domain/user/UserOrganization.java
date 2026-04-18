@@ -59,6 +59,15 @@ public class UserOrganization {
     return active;
   }
 
+  /** Admin đổi role — chỉ thay đổi pointer sang role mới, không tạo row mới. */
+  public void changeRole(Role newRole) {
+    this.role = newRole;
+  }
+
+  public void deactivate() {
+    this.active = false;
+  }
+
   public static final class Key implements Serializable {
     private UUID userId;
     private UUID orgId;

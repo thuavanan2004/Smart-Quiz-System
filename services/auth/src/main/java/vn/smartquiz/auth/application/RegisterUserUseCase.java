@@ -8,11 +8,12 @@ import java.util.Base64;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import vn.smartquiz.auth.common.AuthException;
 import vn.smartquiz.auth.common.ErrorCode;
+import vn.smartquiz.auth.config.AuthDevProperties;
+import vn.smartquiz.auth.domain.notification.NotificationSender;
 import vn.smartquiz.auth.domain.password.Argon2PasswordHasher;
 import vn.smartquiz.auth.domain.password.PasswordPolicy;
 import vn.smartquiz.auth.domain.user.EmailVerificationToken;
@@ -38,6 +39,7 @@ public class RegisterUserUseCase {
   private final EmailVerificationTokenRepository verificationRepo;
   private final PasswordPolicy policy;
   private final Argon2PasswordHasher hasher;
+  private final NotificationSender notificationSender;
   private final Clock clock;
   private final boolean devExposeVerificationToken;
   private final SecureRandom random = new SecureRandom();
@@ -48,15 +50,17 @@ public class RegisterUserUseCase {
       EmailVerificationTokenRepository verificationRepo,
       PasswordPolicy policy,
       Argon2PasswordHasher hasher,
-      Clock clock,
-      @Value("${auth.dev-expose-verification-token:false}") boolean devExposeVerificationToken) {
+      NotificationSender notificationSender,
+      AuthDevProperties devProps,
+      Clock clock) {
     this.userRepo = userRepo;
     this.passwordHistoryRepo = passwordHistoryRepo;
     this.verificationRepo = verificationRepo;
     this.policy = policy;
     this.hasher = hasher;
+    this.notificationSender = notificationSender;
     this.clock = clock;
-    this.devExposeVerificationToken = devExposeVerificationToken;
+    this.devExposeVerificationToken = devProps.exposeVerificationToken();
   }
 
   @Transactional
@@ -78,7 +82,7 @@ public class RegisterUserUseCase {
     byte[] raw = new byte[32];
     random.nextBytes(raw);
     String tokenPlain = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
-    String tokenHash = TokenHashing.sha256Hex(tokenPlain);
+    byte[] tokenHash = TokenHashing.sha256Raw(tokenPlain);
     verificationRepo.save(
         EmailVerificationToken.issue(
             user.getId(),
@@ -87,11 +91,8 @@ public class RegisterUserUseCase {
             now,
             now.plus(VERIFICATION_TTL)));
 
-    log.info(
-        "User registered id={} email={} — verification token issued (TTL 24h, plaintext logged only in DEBUG)",
-        user.getId(),
-        user.getEmail());
-    log.debug("verify_email plaintext token for {}: {}", cmd.email(), tokenPlain);
+    log.info("User registered id={} email={}", user.getId(), user.getEmail());
+    notificationSender.sendEmailVerification(user.getEmail(), tokenPlain);
 
     return new Result(user.getId(), true, devExposeVerificationToken ? tokenPlain : null);
   }

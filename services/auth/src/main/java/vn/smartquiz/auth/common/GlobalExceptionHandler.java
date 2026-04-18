@@ -11,6 +11,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -23,7 +26,11 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(AuthException.class)
   public ResponseEntity<ProblemDetail> handleAuth(AuthException ex, HttpServletRequest req) {
-    return build(ex.code(), ex.getMessage(), req, null);
+    var response = build(ex.code(), ex.getMessage(), req, null);
+    if (ex.retryAfter() != null && !ex.retryAfter().isZero()) {
+      response.getHeaders().add("Retry-After", Long.toString(ex.retryAfter().toSeconds()));
+    }
+    return response;
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -40,6 +47,17 @@ public class GlobalExceptionHandler {
                         fe.getDefaultMessage() == null ? "invalid" : fe.getDefaultMessage()))
             .toList();
     return build(ErrorCode.AUTH_WEAK_PASSWORD, "Request không hợp lệ", req, errors);
+  }
+
+  @ExceptionHandler(HttpMessageNotReadableException.class)
+  public ResponseEntity<ProblemDetail> handleMalformedJson(
+      HttpMessageNotReadableException ex, HttpServletRequest req) {
+    return build(ErrorCode.AUTH_WEAK_PASSWORD, "JSON body không hợp lệ", req, null);
+  }
+
+  @ExceptionHandler({AccessDeniedException.class, AuthorizationDeniedException.class})
+  public ResponseEntity<ProblemDetail> handleDenied(Exception ex, HttpServletRequest req) {
+    return build(ErrorCode.AUTH_FORBIDDEN, ErrorCode.AUTH_FORBIDDEN.defaultTitle(), req, null);
   }
 
   @ExceptionHandler(Exception.class)

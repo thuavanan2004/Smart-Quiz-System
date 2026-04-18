@@ -18,8 +18,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import vn.smartquiz.auth.config.AuthJwtProperties;
 
 /**
  * Phát JWT RS256 theo design §5.1. Slice 1 chỉ cấp access token; phát thêm claim `orgs[]` +
@@ -36,15 +36,11 @@ public class JwtTokenIssuer {
   private final List<String> audience;
   private final Duration accessTtl;
 
-  public JwtTokenIssuer(
-      JWKSource<SecurityContext> jwkSource,
-      @Value("${auth.jwt.issuer}") String issuer,
-      @Value("${auth.jwt.access-ttl-seconds:900}") long accessTtlSeconds,
-      @Value("${auth.jwt.audience:smartquiz-api}") String audience) {
+  public JwtTokenIssuer(JWKSource<SecurityContext> jwkSource, AuthJwtProperties props) {
     this.jwkSource = jwkSource;
-    this.issuer = issuer;
-    this.audience = List.of(audience);
-    this.accessTtl = Duration.ofSeconds(accessTtlSeconds);
+    this.issuer = props.issuer();
+    this.audience = List.of(props.audience());
+    this.accessTtl = Duration.ofSeconds(props.accessTtlSeconds());
   }
 
   public AccessToken issueAccessToken(AccessTokenInput input) {
@@ -72,6 +68,7 @@ public class JwtTokenIssuer {
             .claim("authorities", input.authorities())
             .claim("platform_role", null)
             .claim("mfa_passed", false)
+            .claim("sid", input.sessionId() == null ? null : input.sessionId().toString())
             .claim("token_type", "access");
 
     try {
@@ -93,6 +90,7 @@ public class JwtTokenIssuer {
 
   public record AccessTokenInput(
       UUID userId,
+      UUID sessionId,
       String email,
       boolean emailVerified,
       UUID activeOrgId,

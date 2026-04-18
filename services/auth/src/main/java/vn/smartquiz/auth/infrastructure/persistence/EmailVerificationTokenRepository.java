@@ -7,7 +7,7 @@ import vn.smartquiz.auth.domain.user.EmailVerificationToken;
 
 @Repository
 public interface EmailVerificationTokenRepository
-    extends JpaRepository<EmailVerificationToken, String> {
+    extends JpaRepository<EmailVerificationToken, byte[]> {
 
-  Optional<EmailVerificationToken> findByTokenHashAndPurpose(String tokenHash, String purpose);
+  Optional<EmailVerificationToken> findByTokenHashAndPurpose(byte[] tokenHash, String purpose);
 }
