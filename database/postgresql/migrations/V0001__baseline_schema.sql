@@ -1,8 +1,10 @@
 -- =============================================================================
--- SMART QUIZ SYSTEM - PostgreSQL 16 SCHEMA
+-- V0001__baseline_schema.sql — PostgreSQL 16 baseline schema
 -- =============================================================================
--- File tổng hợp toàn bộ bảng, ENUM, index của PostgreSQL
--- Chạy: psql -U postgres -d smartquiz -f schema.sql
+-- Toàn bộ ENUM, bảng, FK, index của PostgreSQL.
+-- Là Flyway baseline: migration đầu tiên khi Flyway chạy trên DB trống.
+-- Đồng thời được mount vào Docker initdb để PG container tự seed schema
+-- khi volume trống (xem infra/docker-compose.dev.yml + database/docker-compose.yml).
 -- =============================================================================
 
 -- Extensions cần thiết

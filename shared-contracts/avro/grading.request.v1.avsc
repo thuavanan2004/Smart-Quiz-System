@@ -1,0 +1,24 @@
+{
+    "namespace": "com.smartquiz.events.grading",
+    "name": "GradingRequest",
+    "type": "record",
+    "doc": "Exam Service gửi đến AI Service để chấm câu tự luận / short-answer. submission_id là idempotency key.",
+    "fields": [
+        { "name": "envelope",        "type": "com.smartquiz.events.common.EventEnvelope" },
+        { "name": "submission_id",   "type": "string", "doc": "Trùng với AnswerSubmitted.submission_id" },
+        { "name": "attempt_id",      "type": "string" },
+        { "name": "question_ref_id", "type": "string" },
+        { "name": "question_type",   "type": {
+            "type": "enum",
+            "name": "GradableType",
+            "symbols": ["SHORT_ANSWER", "ESSAY", "CODE_EXECUTION"]
+        }},
+        { "name": "question_text",   "type": "string" },
+        { "name": "rubric_json",     "type": ["null", "string"], "default": null, "doc": "JSON rubric để LLM chấm — null nếu dùng default" },
+        { "name": "expected_answer", "type": ["null", "string"], "default": null },
+        { "name": "student_answer",  "type": "string" },
+        { "name": "max_points",      "type": "double" },
+        { "name": "language",        "type": "string", "default": "vi" },
+        { "name": "priority",        "type": { "type": "enum", "name": "Priority", "symbols": ["LOW", "NORMAL", "HIGH"] }, "default": "NORMAL" }
+    ]
+}

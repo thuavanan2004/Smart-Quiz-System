@@ -1,0 +1,81 @@
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smartquiz}
+    username: ${DB_USER:smartquiz}
+    password: ${DB_PASSWORD:smartquiz}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          lob:
+            non_contextual_creation: true
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: "filesystem:../../database/postgresql/migrations"
+    schemas: public
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+
+server:
+  port: 3001
+  forward-headers-strategy: framework
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  server:
+    port: 9001
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+auth:
+  jwt:
+    # Dev: đọc PEM local. Prod: override bằng Vault Transit (xem ADR-001).
+    private-key-path: ${JWT_PRIVATE_KEY_PATH:../../ops/keys/jwt.private.pem}
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:../../ops/keys/jwt.public.pem}
+    key-id: ${JWT_KEY_ID:2026-04-key1}
+    issuer: ${JWT_ISSUER:https://auth.smartquiz.vn}
+    access-ttl-seconds: 900
+    refresh-ttl-days: 7
+
+logging:
+  level:
+    root: INFO
+    vn.smartquiz: DEBUG
+    org.springframework.security: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

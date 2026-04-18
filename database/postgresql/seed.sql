@@ -1,7 +1,9 @@
 -- =============================================================================
 -- SMART QUIZ SYSTEM - PostgreSQL SEED DATA (Dữ liệu mẫu)
 -- =============================================================================
--- Chạy sau schema.sql:
+-- Chạy sau khi tất cả migration đã apply:
+--   psql -U postgres -d smartquiz -f migrations/V0001__baseline_schema.sql
+--   psql -U postgres -d smartquiz -f migrations/V1776521023__add_outbox_and_fencing.sql
 --   psql -U postgres -d smartquiz -f seed.sql
 -- =============================================================================
 

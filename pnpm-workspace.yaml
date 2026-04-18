@@ -1,0 +1,3 @@
+packages:
+  - "web"
+  # Khi có shared TS package (vd tsd-contracts): thêm "packages/*"

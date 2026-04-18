@@ -10,8 +10,8 @@ database/
 ├── docker-compose.yml      ← Stack all-in-one (5 DBs + Kibana)
 ├── postgresql/
 │   ├── README.md           ← Hướng dẫn riêng PostgreSQL
-│   ├── schema.sql          ← Tables, enums, indexes
-│   └── seed.sql            ← Dữ liệu mẫu
+│   ├── migrations/         ← Flyway-managed migrations (V0001 baseline + các V tiếp)
+│   └── seed.sql            ← Dữ liệu mẫu (không qua Flyway)
 ├── mongodb/
 │   ├── README.md
 │   ├── schema.js

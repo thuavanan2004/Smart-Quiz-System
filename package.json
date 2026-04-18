@@ -1,0 +1,19 @@
+{
+  "name": "smartquiz-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.10.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter ./web dev",
+    "build": "pnpm --filter ./web build",
+    "lint": "pnpm --filter ./web lint",
+    "typecheck": "pnpm --filter ./web typecheck"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}

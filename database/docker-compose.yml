@@ -25,7 +25,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./postgresql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./postgresql/migrations/V0001__baseline_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./postgresql/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d smartquiz"]

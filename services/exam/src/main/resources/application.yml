@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: exam-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smartquiz}
+    username: ${DB_USER:smartquiz}
+    password: ${DB_PASSWORD:smartquiz}
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 50
+          lob:
+            non_contextual_creation: true
+        order_inserts: true
+        order_updates: true
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: "filesystem:../../database/postgresql/migrations"
+    schemas: public
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        compression.type: lz4
+    consumer:
+      group-id: exam-service
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      properties:
+        isolation.level: read_committed
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${AUTH_JWKS_URI:http://localhost:3001/.well-known/jwks.json}
+
+server:
+  port: 3002
+  forward-headers-strategy: framework
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  server:
+    port: 9002
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+exam:
+  outbox:
+    # Relayer poll interval — RPO ≤ 5s (xem NFR trong CLAUDE.md)
+    poll-interval-ms: 500
+    batch-size: 100
+  attempt:
+    # Fencing token: luôn check state_version khi suspend/resume (ADR-001)
+    fencing-enabled: true
+
+logging:
+  level:
+    root: INFO
+    vn.smartquiz: DEBUG
+    org.springframework.kafka: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

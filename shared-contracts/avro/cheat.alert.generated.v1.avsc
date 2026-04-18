@@ -1,0 +1,25 @@
+{
+    "namespace": "com.smartquiz.events.cheat",
+    "name": "CheatAlertGenerated",
+    "type": "record",
+    "doc": "CDS phát cảnh báo khi risk_score vượt ngưỡng hoặc combo rule khớp. Exam (để suspend), Proctor UI (realtime), Notification consume.",
+    "fields": [
+        { "name": "envelope",          "type": "com.smartquiz.events.common.EventEnvelope" },
+        { "name": "alert_id",          "type": "string", "doc": "UUID duy nhất cho alert — idempotency" },
+        { "name": "attempt_id",        "type": "string" },
+        { "name": "user_id",           "type": "string" },
+        { "name": "exam_id",           "type": "string" },
+        { "name": "severity",          "type": "com.smartquiz.events.common.Severity" },
+        { "name": "risk_score",        "type": "int", "doc": "Tổng risk sau khi cộng delta event này" },
+        { "name": "risk_delta",        "type": "int" },
+        { "name": "triggering_events", "type": { "type": "array", "items": "string" }, "doc": "Danh sách event_id từ CheatEventRaw đã đóng góp" },
+        { "name": "reason_codes",      "type": { "type": "array", "items": "string" }, "doc": "Mã rule đã fire, ví dụ: R_MULTI_IP, R_FACE_MISSING_60S" },
+        { "name": "suggested_action",  "type": {
+            "type": "enum",
+            "name": "SuggestedAction",
+            "symbols": ["NONE", "WARN", "FLAG_REVIEW", "SUSPEND_ATTEMPT", "TERMINATE"]
+        }},
+        { "name": "requires_human_review", "type": "boolean", "default": true },
+        { "name": "state_version",     "type": ["null", "long"], "default": null, "doc": "Fencing token — Exam CAS khi áp dụng action để tránh race" }
+    ]
+}

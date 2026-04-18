@@ -50,8 +50,9 @@ cd D:\SmartQuizSystem\database\postgresql
 :: Tạo DB
 psql -U postgres -c "CREATE DATABASE smartquiz;"
 
-:: Chạy schema
-psql -U postgres -d smartquiz -f schema.sql
+:: Chạy schema (chạy toàn bộ migrations theo thứ tự)
+psql -U postgres -d smartquiz -f migrations/V0001__baseline_schema.sql
+psql -U postgres -d smartquiz -f migrations/V1776521023__add_outbox_and_fencing.sql
 
 :: Chạy seed
 psql -U postgres -d smartquiz -f seed.sql

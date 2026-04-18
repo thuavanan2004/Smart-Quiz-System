@@ -4,8 +4,9 @@
 
 | File | Mô tả |
 | ---- | ----- |
-| `schema.sql` | Toàn bộ ENUM, bảng, FK, index (14 bảng) |
-| `seed.sql`   | Dữ liệu mẫu: 3 org, 8 users, 3 exams, 3 attempts, certificates... |
+| `migrations/V0001__baseline_schema.sql` | Baseline ENUM + bảng + FK + index (single source of truth, Flyway-managed) |
+| `migrations/V1776521023__add_outbox_and_fencing.sql` | Outbox + fencing token (ADR-001) |
+| `seed.sql`   | Dữ liệu mẫu: 3 org, 8 users, 3 exams, 3 attempts, certificates... (KHÔNG qua Flyway — chỉ dùng cho dev local) |
 
 ## Tổng hợp Schema
 
@@ -39,7 +40,7 @@ docker compose up -d postgres
 docker exec -it sq_postgres psql -U postgres -d smartquiz -c "\dt"
 ```
 
-`schema.sql` + `seed.sql` đã được mount vào initdb → chạy tự động lần đầu.
+`migrations/V0001__baseline_schema.sql` + `seed.sql` đã được mount vào initdb → chạy tự động lần đầu. Các migration sau (V1776521023…) do Flyway chạy khi service boot.
 
 ## Cách 2: Cài native trên Windows
 
@@ -66,7 +67,8 @@ CREATE DATABASE smartquiz;
 ```bash
 cd D:\SmartQuizSystem\database\postgresql
 
-psql -U postgres -d smartquiz -f schema.sql
+psql -U postgres -d smartquiz -f migrations/V0001__baseline_schema.sql
+psql -U postgres -d smartquiz -f migrations/V1776521023__add_outbox_and_fencing.sql
 psql -U postgres -d smartquiz -f seed.sql
 ```
 

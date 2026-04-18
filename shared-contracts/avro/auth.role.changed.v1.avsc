@@ -1,0 +1,27 @@
+{
+    "namespace": "com.smartquiz.events.auth",
+    "name": "RoleChanged",
+    "type": "record",
+    "doc": "Auth Service phát khi user được gán role mới hoặc role được thêm/bớt permission. Các service cache permission consume để invalidate ngay (không chờ JWT hết hạn).",
+    "fields": [
+        { "name": "envelope",     "type": "com.smartquiz.events.common.EventEnvelope" },
+        { "name": "change_type",  "type": {
+            "type": "enum",
+            "name": "RoleChangeType",
+            "symbols": [
+                "USER_ROLE_ASSIGNED",
+                "USER_ROLE_REVOKED",
+                "ROLE_PERMISSION_ADDED",
+                "ROLE_PERMISSION_REMOVED",
+                "ROLE_CREATED",
+                "ROLE_DELETED"
+            ]
+        }},
+        { "name": "user_id",      "type": ["null", "string"], "default": null, "doc": "NULL nếu là ROLE_* (không phải user-level)" },
+        { "name": "org_id",       "type": "string" },
+        { "name": "role_id",      "type": "string" },
+        { "name": "role_code",    "type": "string", "doc": "Ví dụ: student, instructor, custom.grading_assistant" },
+        { "name": "permissions",  "type": { "type": "array", "items": "string" }, "default": [], "doc": "Danh sách permission code hiện tại của role sau thay đổi" },
+        { "name": "actor_id",     "type": ["null", "string"], "default": null, "doc": "Admin/user thực hiện thay đổi" }
+    ]
+}

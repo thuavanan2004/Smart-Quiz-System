@@ -1,0 +1,24 @@
+[
+    {
+        "namespace": "com.smartquiz.events.common",
+        "name": "EventEnvelope",
+        "type": "record",
+        "doc": "Metadata đầu mọi event. Producer điền event_id (UUID), service, version, trace_id để consumer chống duplicate và trace xuyên service.",
+        "fields": [
+            { "name": "event_id",    "type": "string",                     "doc": "UUID v4 duy nhất. Consumer dedupe bằng key này." },
+            { "name": "event_type",  "type": "string",                     "doc": "Ví dụ: exam.attempt.submitted" },
+            { "name": "event_version","type": "string", "default": "1.0.0","doc": "SemVer của schema event" },
+            { "name": "occurred_at", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+            { "name": "producer",    "type": "string",                     "doc": "Service phát sinh: auth | exam | question | ai | analytics | cheat-detection" },
+            { "name": "trace_id",    "type": ["null", "string"], "default": null },
+            { "name": "org_id",      "type": ["null", "string"], "default": null },
+            { "name": "user_id",     "type": ["null", "string"], "default": null }
+        ]
+    },
+    {
+        "namespace": "com.smartquiz.events.common",
+        "name": "Severity",
+        "type": "enum",
+        "symbols": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    }
+]

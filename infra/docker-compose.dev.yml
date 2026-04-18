@@ -1,0 +1,276 @@
+# =============================================================================
+# SMART QUIZ SYSTEM - FULL LOCAL DEV STACK
+# =============================================================================
+# Stack đầy đủ cho coding local: databases + Kafka + Schema Registry + MinIO + MailHog.
+#
+# Chạy từ repo root:
+#   docker compose -f infra/docker-compose.dev.yml up -d
+# Tắt:
+#   docker compose -f infra/docker-compose.dev.yml down
+# Xoá dữ liệu:
+#   docker compose -f infra/docker-compose.dev.yml down -v
+#
+# Observability stack (Prometheus/Grafana/Jaeger) tách riêng trong
+# docker-compose.obs.yml — chỉ bật khi cần test metrics/traces.
+# =============================================================================
+
+name: smartquiz-dev
+
+x-common-env: &common-env
+  TZ: Asia/Ho_Chi_Minh
+
+services:
+  # ===========================================================================
+  # DATABASES
+  # ===========================================================================
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sq_postgres
+    environment:
+      <<: *common-env
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: smartquiz
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Baseline schema = Flyway V0001 (single source of truth). Docker initdb
+      # chạy lần đầu khi volume trống; service boot sau đó, Flyway thấy DB đã có
+      # tables → baseline + chạy tiếp V1776521023 (outbox + fencing).
+      - ../database/postgresql/migrations/V0001__baseline_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ../database/postgresql/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d smartquiz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mongodb:
+    image: mongo:7
+    container_name: sq_mongodb
+    environment:
+      <<: *common-env
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+      MONGO_INITDB_DATABASE: smartquiz
+    ports: ["27017:27017"]
+    volumes:
+      - mongodata:/data/db
+      - ../database/mongodb/schema.js:/docker-entrypoint-initdb.d/01_schema.js:ro
+      - ../database/mongodb/seed.js:/docker-entrypoint-initdb.d/02_seed.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- Redis HOT (session thi — AOF everysec, noeviction) --------------------
+  redis-hot:
+    image: redis:7-alpine
+    container_name: sq_redis_hot
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 300 10
+      --maxmemory-policy noeviction
+      --maxmemory 512mb
+    ports: ["6379:6379"]
+    volumes: [redishotdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Redis CACHE (rate limit, ai cache — RDB only, LRU) --------------------
+  redis-cache:
+    image: redis:7-alpine
+    container_name: sq_redis_cache
+    command: >
+      redis-server
+      --save 300 10
+      --maxmemory-policy allkeys-lru
+      --maxmemory 256mb
+    ports: ["6380:6379"]
+    volumes: [rediscachedata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: sq_clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    environment:
+      <<: *common-env
+      CLICKHOUSE_DB: smartquiz_analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - chdata:/var/lib/clickhouse
+      - ../database/clickhouse/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ../database/clickhouse/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: sq_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - cluster.name=smartquiz-local
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes: [esdata:/usr/share/elasticsearch/data]
+    healthcheck:
+      test: ["CMD", "curl", "-sS", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: sq_kibana
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports: ["5601:5601"]
+
+  # ===========================================================================
+  # KAFKA (KRaft mode — không cần Zookeeper)
+  # ===========================================================================
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: sq_kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168       # 7 ngày (khớp design.md)
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+    ports:
+      - "9092:9092"      # trong docker network (các service dùng kafka:9092)
+      - "29092:29092"    # host (dev tool trên laptop connect localhost:29092)
+    volumes: [kafkadata:/var/lib/kafka/data]
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # Avro/JSON Schema Registry (Apicurio — open-source, chạy nhẹ hơn Confluent)
+  schema-registry:
+    image: apicurio/apicurio-registry-mem:2.5.11.Final
+    container_name: sq_schema_registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      QUARKUS_PROFILE: prod
+      REGISTRY_KAFKA_COMMON_BOOTSTRAP_SERVERS: kafka:9092
+    ports: ["8081:8080"]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: sq_kafka_ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: smartquiz-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8080/apis/ccompat/v7
+      DYNAMIC_CONFIG_ENABLED: "true"
+    ports: ["8080:8080"]
+
+  # ===========================================================================
+  # OBJECT STORAGE (MinIO — S3-compatible cho proctoring video, PDF, import file)
+  # ===========================================================================
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-28T09-55-16Z
+    container_name: sq_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9001:9000"      # S3 API (tránh đụng Kafka 9000)
+      - "9002:9001"      # console UI
+    volumes: [miniodata:/data]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # Khởi tạo bucket mặc định
+  minio-init:
+    image: minio/mc:RELEASE.2025-02-21T16-00-46Z
+    container_name: sq_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb -p local/sq-proctoring || true;
+      mc mb -p local/sq-certificates || true;
+      mc mb -p local/sq-imports || true;
+      mc mb -p local/sq-ai-exports || true;
+      mc anonymous set download local/sq-certificates;
+      echo 'Buckets ready';
+      "
+
+  # ===========================================================================
+  # MAIL (MailHog — SMTP dev, không gửi email thật)
+  # ===========================================================================
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: sq_mailhog
+    ports:
+      - "1025:1025"      # SMTP
+      - "8025:8025"      # Web UI
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  pgdata:
+  mongodata:
+  redishotdata:
+  rediscachedata:
+  chdata:
+  esdata:
+  kafkadata:
+  miniodata:

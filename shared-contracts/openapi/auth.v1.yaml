@@ -1,0 +1,1077 @@
+openapi: 3.1.0
+
+info:
+  title: SmartQuiz Auth Service API
+  version: 1.0.0
+  description: |
+    Cổng danh tính duy nhất của SmartQuizSystem.
+    Tài liệu chi tiết: `docs/auth-service-design.md`.
+    Mọi endpoint trả lỗi dạng RFC 7807 Problem Details (xem `components.schemas.Problem`).
+  contact:
+    name: SmartQuizSystem Platform
+    email: platform@smartquiz.vn
+  license:
+    name: Internal — Do Not Distribute
+
+servers:
+  - url: https://auth.smartquiz.vn
+    description: Production
+  - url: https://auth.stage.smartquiz.vn
+    description: Staging
+  - url: http://localhost:3001
+    description: Local dev
+
+tags:
+  - name: public
+    description: Endpoint công khai (không cần JWT)
+  - name: session
+    description: Quản lý session và token
+  - name: mfa
+    description: 2FA TOTP + backup codes
+  - name: oauth
+    description: OAuth2 / SSO (Google, Microsoft, GitHub)
+  - name: account
+    description: Quản lý tài khoản của chính user
+  - name: admin-org
+    description: Admin endpoint org-scoped
+  - name: admin-platform
+    description: Admin endpoint platform-scoped
+  - name: discovery
+    description: OIDC / JWKS discovery
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  # =========================================================================
+  # DISCOVERY
+  # =========================================================================
+  /.well-known/jwks.json:
+    get:
+      tags: [discovery]
+      summary: JSON Web Key Set cho JWT RS256
+      security: []
+      responses:
+        '200':
+          description: JWKS (cache 1h)
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=3600' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Jwks' }
+
+  /.well-known/openid-configuration:
+    get:
+      tags: [discovery]
+      summary: OIDC discovery metadata
+      security: []
+      responses:
+        '200':
+          description: OIDC metadata document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OidcConfiguration' }
+
+  # =========================================================================
+  # PUBLIC — REGISTER / LOGIN / REFRESH / RESET
+  # =========================================================================
+  /auth/register:
+    post:
+      tags: [public]
+      summary: Đăng ký tài khoản mới (email + password)
+      description: Rate limit 5/hour/IP. Sau khi đăng ký, hệ thống gửi email verification.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Đã tạo user, email verification đã gửi
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegisterResponse' }
+        '409':
+          $ref: '#/components/responses/EmailExists'
+        '422':
+          $ref: '#/components/responses/WeakPassword'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/login:
+    post:
+      tags: [public, session]
+      summary: Đăng nhập bằng email + password
+      description: |
+        Rate limit 10/15min/IP + 5/15min/email.
+        Nếu user có MFA: trả `mfa_required=true` với `mfa_token` tạm. Client phải
+        gọi `/auth/login/mfa` tiếp theo.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Đăng nhập thành công hoặc cần MFA
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TokenPair'
+                  - $ref: '#/components/schemas/MfaRequired'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '403':
+          $ref: '#/components/responses/EmailNotVerified'
+        '423':
+          $ref: '#/components/responses/AccountLocked'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/login/mfa:
+    post:
+      tags: [public, session, mfa]
+      summary: Hoàn tất login sau khi đã pass password step (MFA)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaLoginRequest' }
+      responses:
+        '200':
+          description: Token pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          $ref: '#/components/responses/MfaInvalid'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/refresh:
+    post:
+      tags: [public, session]
+      summary: Đổi refresh token để lấy access token mới (rotation)
+      description: |
+        Mỗi refresh token chỉ dùng được **1 lần**. Nếu refresh token được dùng lần
+        thứ 2 → stolen detection: thu hồi toàn bộ refresh token của user đó.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: Token mới (refresh + access)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          $ref: '#/components/responses/TokenInvalid'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/password/forgot:
+    post:
+      tags: [public]
+      summary: Yêu cầu link reset password
+      description: |
+        Luôn trả 200 (không leak user có/không tồn tại — chống enumeration).
+        Rate limit 3/hour/IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordRequest' }
+      responses:
+        '200':
+          description: Chấp nhận yêu cầu (dù email có tồn tại hay không)
+          content:
+            application/json:
+              schema: { type: object }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/password/reset:
+    post:
+      tags: [public]
+      summary: Reset password bằng token gửi qua email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordRequest' }
+      responses:
+        '200':
+          description: Đổi password thành công
+          content:
+            application/json:
+              schema: { type: object }
+        '400':
+          $ref: '#/components/responses/TokenInvalid'
+        '422':
+          $ref: '#/components/responses/WeakPassword'
+
+  /auth/email/verify:
+    post:
+      tags: [public]
+      summary: Xác minh email bằng token gửi qua email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyEmailRequest' }
+      responses:
+        '200':
+          description: Email đã verify
+          content:
+            application/json:
+              schema: { type: object }
+        '400':
+          $ref: '#/components/responses/TokenInvalid'
+
+  # =========================================================================
+  # OAUTH
+  # =========================================================================
+  /auth/oauth/{provider}:
+    get:
+      tags: [oauth, public]
+      summary: Bắt đầu OAuth2 Authorization Code + PKCE flow
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { $ref: '#/components/schemas/OAuthProvider' }
+      responses:
+        '302':
+          description: Redirect đến provider
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+    delete:
+      tags: [oauth, account]
+      summary: Unlink OAuth provider khỏi tài khoản
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { $ref: '#/components/schemas/OAuthProvider' }
+      responses:
+        '204': { description: Đã unlink }
+        '400':
+          description: Không thể unlink (user không còn cách đăng nhập khác)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/oauth/{provider}/callback:
+    get:
+      tags: [oauth, public]
+      summary: Callback từ OAuth provider
+      security: []
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { $ref: '#/components/schemas/OAuthProvider' }
+        - in: query
+          name: code
+          required: true
+          schema: { type: string }
+        - in: query
+          name: state
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: Redirect về app với token (cookie / fragment)
+        '400':
+          $ref: '#/components/responses/OAuthStateMismatch'
+
+  /auth/oauth/{provider}/link:
+    post:
+      tags: [oauth, account]
+      summary: Link thêm OAuth provider vào tài khoản đang login
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { $ref: '#/components/schemas/OAuthProvider' }
+      responses:
+        '302':
+          description: Redirect đến provider
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # =========================================================================
+  # ACCOUNT (yêu cầu JWT)
+  # =========================================================================
+  /auth/me:
+    get:
+      tags: [account]
+      summary: Lấy thông tin user hiện tại + danh sách org + MFA state
+      responses:
+        '200':
+          description: User + orgs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [session, account]
+      summary: Đăng xuất 1 device (thu hồi refresh token hiện tại + blacklist JWT)
+      responses:
+        '204': { description: Đã logout }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout-all:
+    post:
+      tags: [session, account]
+      summary: Đăng xuất tất cả device (revoke all refresh tokens)
+      responses:
+        '204': { description: Đã logout tất cả }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/password/change:
+    post:
+      tags: [account]
+      summary: Đổi password (yêu cầu old_password). Revoke all sessions sau khi đổi.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '204': { description: Đã đổi password }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '422': { $ref: '#/components/responses/WeakPassword' }
+
+  /auth/switch-org:
+    post:
+      tags: [account, session]
+      summary: Đổi org active (phát token mới với `org_id` khác)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id]
+              properties:
+                org_id: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Token mới với org active khác
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: User không phải member của org này
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /auth/sessions:
+    get:
+      tags: [session, account]
+      summary: Danh sách session đang hoạt động của user hiện tại
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SessionInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/sessions/{id}:
+    delete:
+      tags: [session, account]
+      summary: Thu hồi 1 session cụ thể
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Đã revoke }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Session không tồn tại hoặc không thuộc user này
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  # =========================================================================
+  # MFA
+  # =========================================================================
+  /auth/mfa/setup:
+    post:
+      tags: [mfa]
+      summary: Bắt đầu setup MFA (chưa enable)
+      responses:
+        '200':
+          description: Secret + QR URL + 10 backup codes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MfaSetupResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: MFA đã bật
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /auth/mfa/verify:
+    post:
+      tags: [mfa]
+      summary: Xác minh TOTP code để hoàn tất setup MFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaCodeRequest' }
+      responses:
+        '204': { description: MFA đã enable }
+        '401': { $ref: '#/components/responses/MfaInvalid' }
+
+  /auth/mfa/disable:
+    post:
+      tags: [mfa]
+      summary: Tắt MFA (yêu cầu password + 1 TOTP code)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, format: password }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '204': { description: Đã disable MFA }
+        '401': { $ref: '#/components/responses/MfaInvalid' }
+
+  /auth/mfa/backup/regenerate:
+    post:
+      tags: [mfa]
+      summary: Sinh lại 10 backup code mới (invalidate set cũ)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, format: password }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '200':
+          description: Backup codes mới
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backup_codes:
+                    type: array
+                    items: { type: string }
+                    minItems: 10
+                    maxItems: 10
+        '401': { $ref: '#/components/responses/MfaInvalid' }
+
+  # =========================================================================
+  # ADMIN — ORG SCOPED
+  # =========================================================================
+  /admin/users:
+    get:
+      tags: [admin-org]
+      summary: Liệt kê user trong org (yêu cầu permission `user.read.org`)
+      parameters:
+        - in: query
+          name: org_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: q
+          description: Tìm theo email / full name
+          schema: { type: string }
+        - in: query
+          name: role
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: size
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Danh sách user phân trang
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{id}/invite:
+    post:
+      tags: [admin-org]
+      summary: Gửi lại email invitation cho user đã invited
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Đã gửi email }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{id}/role:
+    patch:
+      tags: [admin-org]
+      summary: Đổi role của user trong org (yêu cầu `user.update.role`)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, role_code]
+              properties:
+                org_id: { type: string, format: uuid }
+                role_code: { type: string, example: instructor }
+      responses:
+        '204': { description: Đã đổi role (publish auth.role.changed) }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: User không thuộc org
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /admin/users/{id}/lock:
+    post:
+      tags: [admin-org]
+      summary: Khoá tài khoản user
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                until: { type: string, format: date-time, nullable: true }
+                reason: { type: string }
+      responses:
+        '204': { description: Đã lock }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{id}/unlock:
+    post:
+      tags: [admin-org]
+      summary: Mở khoá tài khoản user
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Đã unlock }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{id}/mfa/disable:
+    post:
+      tags: [admin-org]
+      summary: Admin tắt MFA của user (kèm audit log)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, admin_mfa_code]
+              properties:
+                reason: { type: string }
+                admin_mfa_code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '204': { description: Đã tắt MFA của user }
+        '401': { $ref: '#/components/responses/MfaInvalid' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # =========================================================================
+  # ADMIN — PLATFORM
+  # =========================================================================
+  /admin/impersonate:
+    post:
+      tags: [admin-platform]
+      summary: Tạo JWT impersonate (platform_admin duyệt)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_user_id, reason, duration_minutes]
+              properties:
+                target_user_id: { type: string, format: uuid }
+                reason: { type: string, minLength: 10 }
+                duration_minutes: { type: integer, minimum: 1, maximum: 60 }
+      responses:
+        '200':
+          description: Token impersonate (không kèm refresh)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, expires_in]
+                properties:
+                  access_token: { type: string }
+                  expires_in: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/jwks/rotate:
+    post:
+      tags: [admin-platform]
+      summary: Xoay signing key (cấp kid mới, giữ kid cũ ở JWKS 24h grace period)
+      responses:
+        '200':
+          description: Key mới đã activate
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kid: { type: string }
+                  rotated_at: { type: string, format: date-time }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+# =============================================================================
+# COMPONENTS
+# =============================================================================
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 do Auth Service cấp. Verify bằng JWKS.
+
+  schemas:
+
+    # -------- Problem Details (RFC 7807) --------
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        code:
+          type: string
+          description: |
+            Mã lỗi application-level, ổn định cho client để map i18n.
+            Xem `docs/auth-service-design.md` §15.2.
+          enum:
+            - AUTH_INVALID_CREDENTIALS
+            - AUTH_MFA_REQUIRED
+            - AUTH_MFA_INVALID
+            - AUTH_ACCOUNT_LOCKED
+            - AUTH_EMAIL_NOT_VERIFIED
+            - AUTH_TOKEN_EXPIRED
+            - AUTH_TOKEN_INVALID
+            - AUTH_TOKEN_REVOKED
+            - AUTH_RATE_LIMIT
+            - AUTH_WEAK_PASSWORD
+            - AUTH_EMAIL_EXISTS
+            - AUTH_OAUTH_STATE_MISMATCH
+            - AUTH_FORBIDDEN
+            - AUTH_INTERNAL
+        detail: { type: string }
+        instance: { type: string }
+        trace_id: { type: string }
+        timestamp: { type: string, format: date-time }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+
+    # -------- Auth requests --------
+    RegisterRequest:
+      type: object
+      required: [email, password, full_name]
+      properties:
+        email: { type: string, format: email, maxLength: 320 }
+        password: { type: string, format: password, minLength: 12, maxLength: 128 }
+        full_name: { type: string, minLength: 1, maxLength: 200 }
+        org_slug:
+          type: string
+          description: Nếu có, user auto-join org này với role mặc định (student).
+        invite_token:
+          type: string
+          description: Token từ email invite (bypass email verification).
+
+    RegisterResponse:
+      type: object
+      required: [user_id, email_verification_sent]
+      properties:
+        user_id: { type: string, format: uuid }
+        email_verification_sent: { type: boolean }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+        device_name:
+          type: string
+          description: Hiển thị trong `/auth/sessions` (vd "iPhone 15 Pro")
+
+    MfaRequired:
+      type: object
+      required: [mfa_required, mfa_token]
+      properties:
+        mfa_required:
+          type: boolean
+          enum: [true]
+        mfa_token:
+          type: string
+          description: JWT ngắn hạn (5 phút), chỉ dùng cho `/auth/login/mfa`.
+
+    MfaLoginRequest:
+      type: object
+      required: [mfa_token, code]
+      properties:
+        mfa_token: { type: string }
+        code:
+          type: string
+          description: TOTP 6 chữ số hoặc backup code 12 ký tự.
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token: { type: string }
+        new_password: { type: string, format: password, minLength: 12, maxLength: 128 }
+
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string }
+
+    ChangePasswordRequest:
+      type: object
+      required: [old_password, new_password]
+      properties:
+        old_password: { type: string, format: password }
+        new_password: { type: string, format: password, minLength: 12, maxLength: 128 }
+
+    MfaCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string, pattern: '^[0-9]{6}$' }
+
+    # -------- Auth responses --------
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token: { type: string, description: JWT RS256 }
+        refresh_token: { type: string, description: Opaque 64-byte random }
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Access token TTL (giây). Refresh token TTL = 7 ngày (sliding).
+          example: 900
+
+    MfaSetupResponse:
+      type: object
+      required: [secret, qr_code_url, backup_codes]
+      properties:
+        secret: { type: string, description: Base32-encoded TOTP secret }
+        qr_code_url: { type: string, format: uri, description: otpauth:// URL }
+        backup_codes:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items: { type: string }
+
+    Me:
+      type: object
+      required: [user, orgs, mfa_enabled]
+      properties:
+        user:
+          type: object
+          required: [id, email, full_name, email_verified, created_at]
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: string, format: email }
+            full_name: { type: string }
+            locale: { type: string, example: vi-VN }
+            timezone: { type: string, example: Asia/Ho_Chi_Minh }
+            email_verified: { type: boolean }
+            created_at: { type: string, format: date-time }
+            last_login_at: { type: string, format: date-time, nullable: true }
+        orgs:
+          type: array
+          items: { $ref: '#/components/schemas/OrgMembership' }
+        active_org_id:
+          type: string
+          format: uuid
+          nullable: true
+        mfa_enabled: { type: boolean }
+        platform_role:
+          type: string
+          nullable: true
+          enum: [null, super_admin]
+
+    OrgMembership:
+      type: object
+      required: [id, role_code, joined_at, active]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        role_code: { type: string, example: student }
+        joined_at: { type: string, format: date-time }
+        active: { type: boolean }
+
+    SessionInfo:
+      type: object
+      required: [id, device_name, last_used_at, current]
+      properties:
+        id: { type: string, format: uuid }
+        device_name: { type: string }
+        ip: { type: string }
+        user_agent: { type: string }
+        last_used_at: { type: string, format: date-time }
+        current: { type: boolean }
+
+    UserPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              email: { type: string, format: email }
+              full_name: { type: string }
+              role_code: { type: string }
+              is_active: { type: boolean }
+              locked_until: { type: string, format: date-time, nullable: true }
+              last_login_at: { type: string, format: date-time, nullable: true }
+        page: { type: integer }
+        size: { type: integer }
+        total: { type: integer }
+
+    # -------- OAuth --------
+    OAuthProvider:
+      type: string
+      enum: [google, microsoft, github]
+
+    # -------- Discovery --------
+    Jwks:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, kid, use, alg, n, e]
+            properties:
+              kty: { type: string, enum: [RSA] }
+              kid: { type: string }
+              use: { type: string, enum: [sig] }
+              alg: { type: string, enum: [RS256] }
+              n: { type: string }
+              e: { type: string }
+
+    OidcConfiguration:
+      type: object
+      properties:
+        issuer: { type: string, format: uri }
+        jwks_uri: { type: string, format: uri }
+        authorization_endpoint: { type: string, format: uri }
+        token_endpoint: { type: string, format: uri }
+        userinfo_endpoint: { type: string, format: uri }
+        response_types_supported:
+          type: array
+          items: { type: string }
+        id_token_signing_alg_values_supported:
+          type: array
+          items: { type: string }
+
+  responses:
+
+    Unauthorized:
+      description: Thiếu / sai JWT
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/token-invalid
+            title: Token không hợp lệ
+            status: 401
+            code: AUTH_TOKEN_INVALID
+
+    Forbidden:
+      description: Thiếu permission
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/forbidden
+            title: Thiếu quyền truy cập
+            status: 403
+            code: AUTH_FORBIDDEN
+
+    InvalidCredentials:
+      description: Sai email hoặc password
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/invalid-credentials
+            title: Email hoặc mật khẩu không đúng
+            status: 401
+            code: AUTH_INVALID_CREDENTIALS
+
+    MfaInvalid:
+      description: TOTP / backup code sai
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/mfa-invalid
+            title: Mã MFA không hợp lệ
+            status: 401
+            code: AUTH_MFA_INVALID
+
+    AccountLocked:
+      description: Tài khoản đang bị khoá tạm thời
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/account-locked
+            title: Tài khoản đã bị khóa
+            status: 423
+            code: AUTH_ACCOUNT_LOCKED
+
+    EmailNotVerified:
+      description: Email chưa được xác minh
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/email-not-verified
+            title: Email chưa được xác minh
+            status: 403
+            code: AUTH_EMAIL_NOT_VERIFIED
+
+    EmailExists:
+      description: Email đã đăng ký
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/email-exists
+            title: Email đã được sử dụng
+            status: 409
+            code: AUTH_EMAIL_EXISTS
+
+    WeakPassword:
+      description: Password không đạt policy
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/weak-password
+            title: Mật khẩu không đủ mạnh
+            status: 422
+            code: AUTH_WEAK_PASSWORD
+
+    TokenInvalid:
+      description: Token không hợp lệ / hết hạn / đã dùng
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    OAuthStateMismatch:
+      description: State không khớp (có thể CSRF attack)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/oauth-state
+            title: OAuth state không khớp
+            status: 400
+            code: AUTH_OAUTH_STATE_MISMATCH
+
+    RateLimited:
+      description: Vượt rate limit
+      headers:
+        Retry-After:
+          schema: { type: integer, description: Giây phải chờ }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://smartquiz.vn/errors/rate-limit
+            title: Quá nhiều request
+            status: 429
+            code: AUTH_RATE_LIMIT

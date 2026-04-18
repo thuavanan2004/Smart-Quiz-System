@@ -1,0 +1,67 @@
+spring:
+  application:
+    name: analytics-service
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: analytics-service
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      max-poll-records: 1000
+      properties:
+        isolation.level: read_committed
+        fetch.min.bytes: 65536
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${AUTH_JWKS_URI:http://localhost:3001/.well-known/jwks.json}
+
+server:
+  port: 3006
+  forward-headers-strategy: framework
+
+management:
+  server:
+    port: 9006
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+analytics:
+  clickhouse:
+    url: ${CLICKHOUSE_URL:jdbc:ch://localhost:8123/smartquiz}
+    username: ${CLICKHOUSE_USER:default}
+    password: ${CLICKHOUSE_PASSWORD:}
+    # Batch insert settings — tối ưu throughput, tránh 1 insert / event
+    batch-size: 5000
+    flush-interval-ms: 1000
+  topics:
+    # Topic consume — xem shared-contracts/avro/TOPICS.md
+    exam-events: exam.attempt_submitted.v1
+    question-events: question.question_answered.v1
+
+logging:
+  level:
+    root: INFO
+    vn.smartquiz: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

@@ -1,0 +1,33 @@
+{
+    "namespace": "com.smartquiz.events.cheat",
+    "name": "CheatEventRaw",
+    "type": "record",
+    "doc": "Tín hiệu gian lận thô từ browser/client hoặc server rule engine. Cheating Detection Service consume, tính risk delta, có thể publish CheatAlertGenerated.",
+    "fields": [
+        { "name": "envelope",         "type": "com.smartquiz.events.common.EventEnvelope" },
+        { "name": "attempt_id",       "type": "string" },
+        { "name": "user_id",          "type": "string" },
+        { "name": "exam_id",          "type": "string" },
+        { "name": "event_type",       "type": {
+            "type": "enum",
+            "name": "CheatEventType",
+            "doc": "Trùng với PostgreSQL ENUM cheat_event_type",
+            "symbols": [
+                "TAB_SWITCH", "WINDOW_BLUR", "FULLSCREEN_EXIT", "COPY_EVENT", "PASTE_EVENT",
+                "RIGHT_CLICK", "DEVTOOLS_OPEN", "KEYBOARD_SHORTCUT", "CONTEXT_MENU",
+                "IP_CHANGE", "VPN_DETECTED", "MULTIPLE_IP", "GEOLOCATION_CHANGE",
+                "TYPING_ANOMALY", "ANSWER_SPEED_ANOMALY", "IDLE_TOO_LONG", "ANSWER_PATTERN",
+                "FACE_MISSING", "MULTIPLE_FACES", "PHONE_DETECTED", "GAZE_OFF_SCREEN",
+                "AUDIO_DETECTED", "ENVIRONMENT_ISSUE",
+                "ANSWER_SIMILARITY", "SYNC_SUBMISSION", "SCORE_ANOMALY"
+            ]
+        }},
+        { "name": "event_layer",      "type": "int", "doc": "1-6: L1 browser, L2 network, L3 behavior, L4 semantic, L5 vision, L6 statistical" },
+        { "name": "client_timestamp", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+        { "name": "payload_json",     "type": "string", "doc": "Chi tiết event (JSON) — tuỳ event_type" },
+        { "name": "question_index",   "type": ["null", "int"],    "default": null },
+        { "name": "ip_address",       "type": ["null", "string"], "default": null },
+        { "name": "user_agent",       "type": ["null", "string"], "default": null },
+        { "name": "geo_country",      "type": ["null", "string"], "default": null }
+    ]
+}
