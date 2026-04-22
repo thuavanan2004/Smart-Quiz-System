@@ -112,7 +112,7 @@ CREATE INDEX ix_refresh_tokens_user_active ON auth.refresh_tokens(user_id) WHERE
 -- 4.1. ENUM types
 -- -----------------------------------------------------------------------------
 
-CREATE TYPE core.question_type  AS ENUM ('MCQ_SINGLE','MCQ_MULTI','TRUE_FALSE','ESSAY');
+CREATE TYPE core.question_type  AS ENUM ('MCQ_SINGLE','MCQ_MULTI','TRUE_FALSE','SHORT_ANSWER','ESSAY');
 CREATE TYPE core.difficulty     AS ENUM ('EASY','MEDIUM','HARD');
 CREATE TYPE core.exam_status    AS ENUM ('DRAFT','PUBLISHED','ARCHIVED');
 CREATE TYPE core.attempt_status AS ENUM ('IN_PROGRESS','SUSPENDED','SUBMITTED','GRADED','CANCELLED');
@@ -261,13 +261,21 @@ CREATE TABLE core.attempt_answers (
     answer_data                 JSONB NOT NULL DEFAULT '{}'::jsonb,   -- {selected: [...]} | {text: "..."}
     score                       NUMERIC(6,2),
     feedback                    TEXT,
+    -- Metadata chấm điểm
+    graded_by                   VARCHAR(16),                          -- RULE | AI | TEACHER (override)
+    grading_provider            VARCHAR(16),                          -- gemini | ollama | null (RULE)
     -- AI tutor explanation — ADR-006 §2
     ai_explanation              TEXT,
-    ai_explanation_status       VARCHAR(16),                          -- PENDING | READY | FAILED
+    ai_explanation_status       VARCHAR(16),                          -- PENDING | READY | FAILED | SKIPPED
     -- AI essay detection — ADR-006 §3
     ai_detection_score          NUMERIC(5,4) CHECK (ai_detection_score IS NULL OR (ai_detection_score BETWEEN 0 AND 1)),
     ai_detection_method         VARCHAR(32),                          -- perplexity | stylometry | hybrid
     ai_detection_details        JSONB,
+    -- Teacher override (ADR-008 safety net khi AI fail / sai)
+    teacher_override_score      NUMERIC(6,2),
+    teacher_override_reason     TEXT,
+    teacher_override_by         UUID,                                 -- auth.users.id (role TEACHER/ADMIN)
+    teacher_override_at         TIMESTAMPTZ,
     submitted_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
     graded_at                   TIMESTAMPTZ,
     UNIQUE (attempt_id, position)
@@ -276,6 +284,9 @@ CREATE INDEX ix_answers_attempt ON core.attempt_answers(attempt_id);
 CREATE INDEX ix_answers_question ON core.attempt_answers(question_id);
 CREATE INDEX ix_answers_ai_detection_high ON core.attempt_answers(ai_detection_score DESC)
     WHERE ai_detection_score >= 0.7;
+-- Danh sách essay cần teacher chấm tay khi AI degraded (ADR-008 tier 3)
+CREATE INDEX ix_answers_needs_human ON core.attempt_answers(graded_at NULLS FIRST)
+    WHERE ai_explanation_status = 'FAILED' OR (graded_by IS NULL AND submitted_at IS NOT NULL);
 
 -- -----------------------------------------------------------------------------
 -- 4.7. Stylometry baseline + LLM cache (AI Combo A — ADR-006, ADR-007)

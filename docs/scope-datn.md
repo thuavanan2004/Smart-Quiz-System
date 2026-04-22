@@ -321,6 +321,39 @@ Output: markdown plain text, max 150 từ.
 
 **Cost control**: cache aggressive (cùng wrong answer → không gọi lại). Giáo viên xem lại cũng dùng cache.
 
+### 9.2.1. SHORT_ANSWER — chấm 2 bước (rule trước, AI fallback)
+
+Question type `SHORT_ANSWER` là điền từ / câu trả lời ngắn (ví dụ: "Thủ đô
+Việt Nam?" → "Hà Nội"). Chấm bằng **chiến lược 2 bước** để tiết kiệm AI quota:
+
+**Bước 1 — Rule-based (Core, đồng bộ, zero-cost)**:
+- Normalize user answer: lowercase, strip diacritic (tuỳ config), strip whitespace + punctuation.
+- So khớp với `content.correct_answer` và list `content.accepted_variants[]`.
+- Nếu match exact → điểm full.
+- Nếu fuzzy (Levenshtein ≤ 2 hoặc ratio ≥ 0.9 bằng `rapidfuzz`) → điểm full + warn cho teacher xem.
+
+**Bước 2 — AI fallback (chỉ khi rule fail)**:
+- Core gửi `grading.request.v1` với flag `mode=short_answer_semantic`.
+- AI so sánh ngữ nghĩa user answer vs correct_answer (embedding cosine) hoặc LLM "Does X mean Y?" prompt.
+- Trả `score` 0..1 (partial credit) + explanation.
+
+**Ước tính**: ~90% câu SHORT_ANSWER pass bước 1 → tiết kiệm 90% AI call.
+
+### 9.2.2. Teacher override AI score (safety net)
+
+Vì AI chất lượng có thể kém (đặc biệt khi fallback Ollama), giáo viên **có quyền
+override điểm AI đã chấm**:
+
+- Endpoint: `PATCH /api/v1/attempts/{id}/answers/{position}/override`
+  ```json
+  { "score": 8.5, "reason": "AI chấm thấp, học sinh trả lời đúng ý nhưng viết ngắn" }
+  ```
+- UPDATE `attempt_answers.teacher_override_score`, `teacher_override_reason`, `teacher_override_by`, `teacher_override_at`.
+- Final score UI hiển thị: `COALESCE(teacher_override_score, score)`.
+- Lưu history thay đổi (event `attempt.answer.overridden.v1` tùy chọn — future work).
+
+Teacher dashboard có tab "Essay chờ review" → list essay `ai_explanation_status='FAILED'` hoặc `ai_detection_score >= 0.7` → ưu tiên review.
+
 ### 9.3. AI-generated essay detector
 
 **Story**: Học sinh nộp essay → AI chấm điểm + detect khả năng essay do ChatGPT viết. Trang review của giáo viên hiển thị badge màu: 🟢 0-30% (an toàn), 🟡 30-60% (nghi ngờ), 🔴 60-100% (khả năng cao AI). Kèm lý do.
@@ -365,31 +398,49 @@ Output: markdown plain text, max 150 từ.
 
 **Defend**: nêu rõ giới hạn — false positive ~5-10%, không nên làm căn cứ xử phạt duy nhất, là **chỉ báo để giáo viên xem xét**.
 
-### 9.4. Cost estimate LLM API (cho demo 1 tháng)
+### 9.4. Cost estimate — mục tiêu $0 (ADR-008)
 
-| Feature                    | Model        | Input/Output (avg)    | Calls/demo | Chi phí ước tính |
-| -------------------------- | ------------ | --------------------- | ---------- | ---------------- |
-| Chấm essay                 | Gemini Flash | 1k in / 300 out       | 50         | ~$0.05           |
-| Sinh đề từ doc             | Gemini Flash | 4k in / 2k out        | 20         | ~$0.15           |
-| Tutor explain              | Haiku 4.5    | 500 in / 200 out      | 100 (sau cache ~30) | ~$0.10   |
-| Essay detector (perplexity)| distilgpt2 local | — (CPU)          | 50         | $0               |
-| Embedding (dedupe + stylo) | local MiniLM | — (CPU)               | 500        | $0               |
-| **Tổng**                   |              |                       |            | **~$0.30/tháng** |
+Budget DATN = **0 đồng**. Chiến lược: Gemini free tier làm provider chính,
+Ollama local làm fallback, pre-warm cache cho demo.
 
-Bật cache → ~$0.10/tháng. Budget rất thấp, phù hợp DATN.
+| Feature                    | Primary                | Fallback         | Cost   |
+| -------------------------- | ---------------------- | ---------------- | ------ |
+| Chấm essay                 | Gemini 2.0 Flash free  | Ollama llama3.1:8b | $0  |
+| Sinh đề từ doc             | Gemini 2.0 Flash free  | Ollama (8B kém hơn, rate=1/lần) | $0 |
+| Tutor explain              | Gemini 2.0 Flash free  | Ollama           | $0   |
+| Essay detector (perplexity)| distilgpt2 local CPU   | —                | $0   |
+| Embedding (dedupe + stylo) | MiniLM local CPU       | —                | $0   |
+| SHORT_ANSWER grading       | Rule-based fuzzy match | Gemini nếu fuzzy fail | $0 |
+
+**Gemini free tier quota** (2026): 15 RPM · ~1500 req/ngày · 1M tokens/ngày
+cho `gemini-2.0-flash`. Đủ cho development + defend.
+
+**Rủi ro**:
+- Rate limit 15 RPM → khi teacher bấm "Sinh 50 câu hỏi" cần queue + delay 4s/lần.
+- Quota cạn → tự động switch Ollama. Demo không bị đứng.
+- Google đổi chính sách free tier → ít xảy ra trong 6–12 tháng DATN; backup là Ollama 100%.
+
+**Pre-warm cache** (bắt buộc trước defend):
+Chạy `ops/prewarm-ai-cache.sh` để populate `core.ai_cache` với scenario demo đã
+chốt trước. Demo **chạy 100% từ cache, zero API call** → không phụ thuộc Internet
+sân khấu.
+
+Chi tiết ADR-008.
 
 ### 9.5. Dependency Python mới
 
 Thêm vào `pyproject.toml` của AI service:
 ```
-pymupdf            # PDF extraction
-python-docx        # DOCX extraction
-langchain-text-splitters  # chunking
+pymupdf                  # PDF extraction
+python-docx              # DOCX extraction
+langchain-text-splitters # chunking
 sentence-transformers    # embedding local
 transformers             # perplexity (distilgpt2)
 torch                    # CPU inference
 pgvector                 # client
-google-generativeai      # Gemini (hoặc anthropic cho Claude)
+google-generativeai      # Gemini free tier (primary, ADR-008)
+httpx                    # Ollama API client (fallback, ADR-008)
+rapidfuzz                # SHORT_ANSWER fuzzy matching (Levenshtein nhanh hơn python-Levenshtein)
 ```
 
 ## 10. Future work (để defend)

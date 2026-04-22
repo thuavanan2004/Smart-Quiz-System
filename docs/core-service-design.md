@@ -141,16 +141,18 @@ Response 202:
 | POST   | `/exams/{id}/archive`                        | → ARCHIVED                          |
 | POST   | `/exams/{id}/assignments`                    | Gán student list                    |
 
-### 3.4. Attempts (`STUDENT`)
+### 3.4. Attempts (`STUDENT` cho own, `TEACHER` cho review/override)
 
-| Method | Path                                         | Mô tả                                            |
-| ------ | -------------------------------------------- | ------------------------------------------------ |
-| GET    | `/me/exams`                                  | Exam được assign + status attempt của mình        |
-| POST   | `/exams/{id}/start`                          | Tạo attempt (hoặc resume nếu `IN_PROGRESS`)      |
-| GET    | `/attempts/{id}`                             | Snapshot + câu hỏi theo thứ tự                   |
-| POST   | `/attempts/{id}/answers`                     | Lưu đáp án (idempotent theo `position`)          |
-| POST   | `/attempts/{id}/submit`                      | Kết thúc                                          |
-| GET    | `/attempts/{id}/result`                      | Điểm + từng câu + AI explanation                 |
+| Method | Path                                                     | Mô tả                                            | Role         |
+| ------ | -------------------------------------------------------- | ------------------------------------------------ | ------------ |
+| GET    | `/me/exams`                                              | Exam được assign + status attempt của mình        | STUDENT      |
+| POST   | `/exams/{id}/start`                                      | Tạo attempt (hoặc resume nếu `IN_PROGRESS`)      | STUDENT      |
+| GET    | `/attempts/{id}`                                         | Snapshot + câu hỏi theo thứ tự                   | STUDENT(own) |
+| POST   | `/attempts/{id}/answers`                                 | Lưu đáp án (idempotent theo `position`)          | STUDENT      |
+| POST   | `/attempts/{id}/submit`                                  | Kết thúc                                         | STUDENT      |
+| GET    | `/attempts/{id}/result`                                  | Điểm + từng câu + AI explanation                 | STUDENT(own), TEACHER |
+| GET    | `/teacher/attempts/needing-review`                       | Danh sách essay có `ai_explanation_status=FAILED` hoặc `ai_detection_score >= 0.7` | TEACHER |
+| PATCH  | `/attempts/{id}/answers/{position}/override`             | Teacher override AI score (ADR-008 safety net)   | TEACHER      |
 
 **POST /exams/{id}/start**:
 - Kiểm tra `open_at <= now <= close_at`, assignment tồn tại, chưa có attempt.
@@ -175,10 +177,19 @@ Response 202:
 - Publish outbox:
   - `exam.attempt.submitted.v1`
   - `grading.request.v1` cho mỗi essay answer chưa có score (kèm `need_ai_detection=true`)
-  - `tutor.explanation.request.v1` batch cho list wrong answer (MCQ/TF đã biết sai)
-- Response 200 với điểm tạm (MCQ/TF) + status `AWAITING_AI`.
+  - `grading.request.v1` với `mode=short_answer_semantic` cho SHORT_ANSWER nào rule-based fail (xem §8.5)
+  - `tutor.explanation.request.v1` batch cho list wrong answer (MCQ/TF/SHORT_ANSWER đã biết sai)
+- Response 200 với điểm tạm (MCQ/TF/SHORT_ANSWER đã pass rule) + status `AWAITING_AI`.
 
-**GET /attempts/{id}/result**: chỉ cho xem sau khi `status = GRADED` (AI đã xong).
+**GET /attempts/{id}/result**: cho xem sau khi `status = GRADED` (AI đã xong). Final score per answer = `COALESCE(teacher_override_score, score)`.
+
+**PATCH /attempts/{id}/answers/{position}/override** (teacher safety net, ADR-008):
+```json
+{ "score": 8.5, "reason": "AI chấm quá thấp, đáp án đúng ý nhưng viết ngắn" }
+```
+- Validate role TEACHER/ADMIN; teacher phải là creator của exam (ADMIN bỏ qua).
+- UPDATE `teacher_override_score/reason/by/at`, set `graded_by='TEACHER'`.
+- Recompute `exam_attempts.total_score = SUM(COALESCE(override_score, score))`.
 
 ### 3.5. Analytics (`TEACHER`)
 
@@ -382,13 +393,17 @@ public SubmitResult submit(UUID attemptId, long expectedVersion) {
     if (rows == 0) throw new ConflictException();
 
     List<AttemptAnswer> answers = attemptAnswerRepo.findByAttempt(attemptId);
-    gradeObjective(answers); // MCQ/TF đồng bộ
+    gradeObjective(answers); // MCQ/TF/SHORT_ANSWER (rule-based, xem §8.5)
 
     outbox.enqueue("exam.attempt.submitted.v1", attemptId.toString(), ...);
     for (var a : answers) {
         if (a.question().type() == ESSAY) {
             outbox.enqueue("grading.request.v1", UUID.randomUUID().toString(),
                 buildGradingRequest(a, /*needAiDetection=*/true));
+        } else if (a.question().type() == SHORT_ANSWER && !a.isCorrect()) {
+            // SHORT_ANSWER rule-based fail → gửi AI semantic fallback
+            outbox.enqueue("grading.request.v1", UUID.randomUUID().toString(),
+                buildSemanticShortAnswerRequest(a));
         }
         if (!a.isCorrect() && a.question().type() != ESSAY) {
             outbox.enqueue("tutor.explanation.request.v1", UUID.randomUUID().toString(),
@@ -407,12 +422,74 @@ public SubmitResult submit(UUID attemptId, long expectedVersion) {
 public void onGradingResult(GradingResultEvent e) {
     if (processedEventsRepo.existsById(e.eventId())) return;
     attemptAnswerRepo.applyGrading(e.attemptId(), e.position(),
-        e.score(), e.feedback(), e.aiDetection());
+        e.score(), e.feedback(), e.aiDetection(),
+        /*gradedBy=*/"AI", /*gradingProvider=*/e.provider());
     processedEventsRepo.insert(e.eventId(), "grading.result.v1");
     if (allAnswersGraded(e.attemptId())) {
         attemptRepo.transitionToGraded(e.attemptId());
         wsRegistry.push(e.attemptId(), new ResultReadyMessage());
     }
+}
+```
+
+### 8.5. SHORT_ANSWER chấm 2-bước (ADR-008)
+
+```java
+// Bước 1 — rule-based (trong gradeObjective, chạy đồng bộ lúc submit)
+private void gradeShortAnswer(AttemptAnswer a) {
+    String userAns = normalize(a.answerData().text());   // lowercase, strip diacritic + punct
+    var content = a.question().content();
+    String correct = normalize(content.correctAnswer());
+    List<String> variants = content.acceptedVariants().stream().map(this::normalize).toList();
+
+    if (userAns.equals(correct) || variants.contains(userAns)) {
+        a.setScore(a.question().points());               // exact match
+        a.setGradedBy("RULE");
+        a.setGradedAt(now());
+        return;
+    }
+    // Fuzzy — Levenshtein ratio ≥ 0.9 hoặc distance ≤ 2
+    double ratio = fuzzRatio(userAns, correct);
+    int dist = levenshtein(userAns, correct);
+    if (ratio >= 0.9 || dist <= 2) {
+        a.setScore(a.question().points());               // fuzzy pass
+        a.setFeedback("Fuzzy match (khoảng cách chỉnh sửa: " + dist + ")");
+        a.setGradedBy("RULE");
+        a.setGradedAt(now());
+        return;
+    }
+    // Bước 2 — fail rule: để submit() publish grading.request.v1 mode=short_answer_semantic
+    a.setScore(null);   // chưa chấm, AI sẽ chấm
+}
+```
+
+Helper:
+```java
+private String normalize(String s) {
+    if (s == null) return "";
+    return Normalizer.normalize(s.trim().toLowerCase(), Form.NFD)
+        .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")   // strip dấu
+        .replaceAll("[\\p{Punct}\\s]+", "");                     // strip punct + whitespace
+}
+```
+
+### 8.6. Teacher override
+
+```java
+@Transactional
+public AttemptAnswer overrideScore(UUID attemptId, int position,
+                                   BigDecimal score, String reason,
+                                   UUID teacherId) {
+    AttemptAnswer a = answerRepo.findByAttemptAndPosition(attemptId, position);
+    authorizeTeacher(teacherId, a.attempt().exam());        // creator hoặc ADMIN
+    a.setTeacherOverrideScore(score);
+    a.setTeacherOverrideReason(reason);
+    a.setTeacherOverrideBy(teacherId);
+    a.setTeacherOverrideAt(now());
+    // Recompute total_score
+    BigDecimal total = answerRepo.sumFinalScore(attemptId);   // SUM(COALESCE(override, score))
+    attemptRepo.updateTotalScore(attemptId, total);
+    return a;
 }
 ```
 

@@ -52,7 +52,12 @@ INSERT INTO core.questions (id, type, difficulty, content, metadata, created_by)
      '{"topic":"network","tags":["http"],"bloom_level":"remember"}',
      'a0000000-0000-0000-0000-000000000002'),
 
-    ('b0000000-0000-0000-0000-000000000005', 'ESSAY', 'HARD',
+    ('b0000000-0000-0000-0000-000000000005', 'SHORT_ANSWER', 'EASY',
+     '{"stem":"Viết tắt của \"International Organization for Standardization\" là gì?","correct_answer":"ISO","accepted_variants":["iso","I.S.O.","Iso"],"explanation":"ISO là viết tắt tiêu chuẩn quốc tế của tổ chức."}',
+     '{"topic":"general","tags":["acronym"],"bloom_level":"remember"}',
+     'a0000000-0000-0000-0000-000000000002'),
+
+    ('b0000000-0000-0000-0000-000000000006', 'ESSAY', 'HARD',
      '{"stem":"Trình bày nguyên lý transactional outbox pattern và tại sao nó giải quyết vấn đề dual-write.","rubric":"2đ mô tả dual-write problem; 3đ nguyên lý outbox (ghi cùng TX, relayer publish); 3đ idempotent consumer (dedupe event_id); 2đ trade-off (latency, storage)."}',
      '{"topic":"distributed-system","tags":["outbox","messaging"],"bloom_level":"analyze"}',
      'a0000000-0000-0000-0000-000000000003');
@@ -78,7 +83,8 @@ FROM (VALUES
     (2, 'b0000000-0000-0000-0000-000000000002'::uuid, 2.0),
     (3, 'b0000000-0000-0000-0000-000000000003'::uuid, 2.0),
     (4, 'b0000000-0000-0000-0000-000000000004'::uuid, 1.0),
-    (5, 'b0000000-0000-0000-0000-000000000005'::uuid, 3.0)
+    (5, 'b0000000-0000-0000-0000-000000000005'::uuid, 1.0),
+    (6, 'b0000000-0000-0000-0000-000000000006'::uuid, 2.0)
 ) AS t(pos, qid, pts)
 JOIN core.questions q ON q.id = t.qid;
 
@@ -95,6 +101,6 @@ COMMIT;
 
 -- Smoke check — dùng để verify sau khi chạy seed:
 --   SELECT count(*) FROM auth.users;                    -- 8
---   SELECT count(*) FROM core.questions;                -- 5
---   SELECT count(*) FROM core.exam_questions;           -- 5
+--   SELECT count(*) FROM core.questions;                -- 6
+--   SELECT count(*) FROM core.exam_questions;           -- 6
 --   SELECT count(*) FROM core.exam_assignments;         -- 5

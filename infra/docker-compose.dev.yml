@@ -121,11 +121,33 @@ services:
       kafka:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Ollama (optional — AI fallback tier 2, ADR-008)
+  # Bật bằng:
+  #   docker compose -f infra/docker-compose.dev.yml --profile ai-fallback up -d ollama
+  # Pull model lần đầu (~4GB):
+  #   docker compose -f infra/docker-compose.dev.yml --profile ai-fallback exec ollama ollama pull llama3.1:8b
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sq-ollama
+    profiles: ["ai-fallback"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 
 volumes:
   pgdata:
   redisdata:
   kafkadata:
+  ollama-models:
 
 
 # Endpoint summary:
@@ -134,3 +156,4 @@ volumes:
 #   Kafka       localhost:29092  (services chạy ngoài Docker)
 #               kafka:9092       (services trong cùng compose network)
 #   Kafka UI    localhost:8080   (chỉ khi --profile ui)
+#   Ollama      localhost:11434  (chỉ khi --profile ai-fallback)

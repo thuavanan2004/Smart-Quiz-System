@@ -256,6 +256,36 @@ Viết tiếng Việt, thân thiện, tổng max 150 từ.
 - `MEDIUM` 0.4 – 0.7
 - `HIGH` ≥ 0.7
 
+### 3.5.1. `POST /grade-short-answer-semantic` (SHORT_ANSWER fallback)
+
+Core gọi khi rule-based fuzzy match fail (xem `core-service-design.md` §8.5).
+
+**Request**:
+```json
+{
+  "question": "Viết tắt của International Organization for Standardization?",
+  "correct_answer": "ISO",
+  "accepted_variants": ["iso","I.S.O."],
+  "user_answer": "Tổ chức tiêu chuẩn quốc tế"
+}
+```
+
+**Flow**:
+1. Embed `correct_answer` + `user_answer` bằng MiniLM.
+2. Cosine similarity ≥ 0.85 → full credit (1.0).
+3. 0.65–0.85 → partial credit tỉ lệ tuyến tính.
+4. < 0.65 → gọi LLM "Does '{user_answer}' mean the same as '{correct_answer}'? Trả JSON {equivalent: bool, confidence: 0..1}" → quyết định cuối.
+
+**Response**:
+```json
+{
+  "score": 0.6,
+  "method": "embedding+llm",
+  "similarity": 0.71,
+  "llm_verdict": { "equivalent": true, "confidence": 0.8 }
+}
+```
+
 ### 3.6. `POST /embed`
 
 Trả embedding cho Core khi CRUD question.
@@ -391,7 +421,7 @@ async def update_profile(student_id, text):
 - **Retry**: 1 lần nếu validate fail hoặc model trả empty.
 - **Dedupe nội bộ** (trong cùng batch output): cosine pairwise > 0.95 → giữ câu đầu.
 
-## 6. Cấu hình
+## 6. Cấu hình (ADR-008 free-tier strategy)
 
 `config.yaml`:
 ```yaml
@@ -409,12 +439,24 @@ kafka:
     session_timeout_ms: 45000
 
 llm:
-  provider: gemini            # or: anthropic
-  model: gemini-2.0-flash
-  api_key_env: GEMINI_API_KEY
-  max_concurrency: 5
-  timeout_sec: 60
-  retry: 1
+  # Tier 1 — Gemini free tier (primary)
+  primary:
+    name: gemini
+    model: gemini-2.0-flash
+    api_key_env: GEMINI_API_KEY
+    rate_limit_rpm: 12           # < 15 RPM free tier, có buffer
+    daily_token_limit: 900000    # < 1M free, có buffer
+    timeout_sec: 30
+  # Tier 2 — Ollama local (fallback khi quota/rate hit)
+  fallback:
+    name: ollama
+    base_url: http://ollama:11434
+    model: llama3.1:8b           # hoặc qwen2.5:7b-instruct; pull trước bằng docker compose --profile ai-fallback
+    timeout_sec: 60
+  routing:
+    preemptive_fallback_threshold: 0.1   # nếu quota remaining < 10% → tier 2 với request priority thấp
+    priority_tier1: [grade_essay, generate_from_document]
+    priority_tier2: [tutor_explain, short_answer_semantic]
 
 models:
   embedding:
@@ -430,12 +472,65 @@ detection:
 
 cache:
   enabled: true
-  stale_after_days: 30
+  # No TTL: cache forever cho deterministic prompt.
+  # Invalidate bằng cách bump prompt_version trong cache_key.
+  prompt_version: 1
+  evict_unused_days: 90         # periodic cron xoá entry last_hit_at cũ
 
 internal_auth:
   header: X-Internal-Auth
   token_env: INTERNAL_AUTH_TOKEN
+
+degraded_mode:
+  # Khi tier 1 + tier 2 đều fail
+  grade_essay: human_review     # trả ai_explanation_status=FAILED, teacher chấm tay
+  tutor_explain: skip           # không bắt buộc, UI hiển thị nút Retry
+  generate_from_document: fail  # job status=FAILED, teacher retry
 ```
+
+### 6.1. LlmClient router pseudocode
+
+```python
+class LlmRouter:
+    async def call(self, task: TaskType, prompt: Prompt) -> Response:
+        cache_key = self.cache.key(task, prompt)
+        if cached := await self.cache.get(cache_key):
+            return cached
+
+        provider = self._pick_provider(task)   # tier 1 or tier 2
+        try:
+            resp = await provider.call(prompt)
+        except (RateLimitError, QuotaExceededError, TimeoutError) as e:
+            metrics.fallback_triggered.labels(reason=e.reason).inc()
+            if provider is self.primary:
+                resp = await self.fallback.call(prompt)   # tier 2
+            else:
+                raise DegradedModeError(task)             # tier 3
+
+        await self.cache.put(cache_key, resp)
+        return resp
+
+    def _pick_provider(self, task: TaskType) -> LlmProvider:
+        if task in config.routing.priority_tier2:
+            return self.fallback      # low-priority task → tier 2 trước, giữ tier 1 cho grading
+        if self.primary.quota_ratio() < config.routing.preemptive_fallback_threshold:
+            return self.fallback      # quota gần hết, bảo vệ tier 1
+        return self.primary
+```
+
+### 6.2. Rate limit guard
+
+Token bucket với rate = 12 RPM. Nếu bucket rỗng → sleep + retry max 3 lần, sau đó fallback.
+
+### 6.3. Ollama setup
+
+```bash
+# Pull model 1 lần (~4GB)
+docker compose -f infra/docker-compose.dev.yml --profile ai-fallback run --rm ollama ollama pull llama3.1:8b
+```
+
+Container ollama không auto-start (profile `ai-fallback`). AI service healthcheck
+detect ollama unreachable → chấp nhận degraded tier 3 cho phần đó.
 
 ## 7. Test strategy
 
@@ -455,9 +550,15 @@ internal_auth:
   - `ai_detection_score_histogram`
   - `ai_kafka_consumer_lag_seconds{topic}`
 
-## 9. Cost estimate (recap §9.4 scope-datn)
+## 9. Cost — mục tiêu $0 (ADR-008)
 
-Với cache bật, demo 1 tháng: **~$0.10/tháng** (Gemini Flash) hoặc **~$0.30/tháng** không cache. Budget rất thấp vì dùng local model cho embedding + perplexity.
+Budget DATN = 0 đồng. Dùng Gemini free tier (1500 req/day, 1M token/day) làm
+primary, Ollama local fallback khi quota/rate hit, pre-warm `core.ai_cache`
+cho scenario demo → **zero paid API call**.
+
+Với cache và 2 tier fallback:
+- Development (~300 call/ngày): 100% Gemini free tier.
+- Defend demo: 100% cache hit, zero API call, không phụ thuộc Internet.
 
 ## 10. Ranh giới
 
