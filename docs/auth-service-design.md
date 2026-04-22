@@ -367,7 +367,7 @@ Permission code dùng cấu trúc `{resource}.{action}[.{scope}]`:
 | `analytics.self` | ✔ | ✔ | ✔ | ✔ |
 | `analytics.exam` / `.export` | ✖ | ✔ | ✔ | ✔ |
 | `analytics.org` | ✖ | ✖ | ✔ | ✖ |
-| `user.impersonate` / `ai.prompt.manage` / `cheat.config.weights` | **platform-scope** — chỉ platform_admin | | | |
+| `user.impersonate` / `ai.prompt.manage` / `cheat.config.weights` / `analytics.experiment` | **platform-scope** — chỉ platform_admin | | | |
 
 > **Platform admin** không phải role trong `user_organizations`. Được định nghĩa riêng qua biến env `PLATFORM_ADMIN_EMAILS` (MVP) hoặc bảng `platform_admins` (Phase 2). JWT có thêm claim `platform_role: "super_admin"` — nếu có → bypass org scope cho các permission `scope=platform`.
 
