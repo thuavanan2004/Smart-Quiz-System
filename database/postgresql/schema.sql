@@ -184,11 +184,17 @@ CREATE TABLE oauth_providers (
 
 CREATE UNIQUE INDEX idx_oauth_provider ON oauth_providers(provider, provider_user_id);
 
--- refresh_tokens: active_org_id persist org active để switch-org + refresh giữ ngữ cảnh
--- đúng (auth-service-design.md §12.2).
+-- refresh_tokens:
+--   active_org_id persist org active để switch-org + refresh giữ ngữ cảnh đúng
+--     (auth-service-design.md §12.2).
+--   family_id / rotated_to_id / rotated_from_id: chain rotation cho stolen detection
+--     (auth-service-design.md §5.2.1). 1 lần login = 1 family_id; mỗi refresh tạo row mới
+--     giữ nguyên family_id, link parent↔child qua rotated_from_id/rotated_to_id.
+--     Khi phát hiện reuse (row.revoked=true mà vẫn bị present) → revoke cả family.
 CREATE TABLE refresh_tokens (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    family_id           UUID NOT NULL,               -- cùng login session → cùng family
     token_hash          BYTEA UNIQUE NOT NULL,       -- SHA-256 raw (32 bytes)
     active_org_id       UUID REFERENCES organizations(id) ON DELETE SET NULL,
     device_fingerprint  VARCHAR(128),
@@ -197,11 +203,15 @@ CREATE TABLE refresh_tokens (
     expires_at          TIMESTAMPTZ NOT NULL,
     revoked             BOOLEAN DEFAULT false,
     revoked_at          TIMESTAMPTZ,
+    rotated_from_id     UUID REFERENCES refresh_tokens(id) ON DELETE SET NULL,  -- parent token
+    rotated_to_id       UUID REFERENCES refresh_tokens(id) ON DELETE SET NULL,  -- child token
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_refresh_user  ON refresh_tokens(user_id, expires_at);
-CREATE INDEX idx_refresh_token ON refresh_tokens(token_hash);
+CREATE INDEX idx_refresh_user   ON refresh_tokens(user_id, expires_at);
+CREATE INDEX idx_refresh_token  ON refresh_tokens(token_hash);
+-- Stolen detection: revoke cả family trong 1 UPDATE.
+CREATE INDEX idx_refresh_family ON refresh_tokens(family_id, revoked);
 
 
 -- =============================================================================
@@ -509,11 +519,18 @@ CREATE TABLE mfa_backup_codes (
 );
 CREATE INDEX idx_mfa_backup_user ON mfa_backup_codes(user_id) WHERE used_at IS NULL;
 
--- Token verify email + reset password
+-- Token verify email + reset password + link OAuth + change email
+-- purpose values (app-level enum, DDL giữ VARCHAR để extend dễ):
+--   'verify_email'    TTL 24h   — sau khi register (auth-service-design.md §6.0)
+--   'reset_password'  TTL  1h   — forgot password flow (§6.3)
+--   'link_oauth'      TTL 15m   — email-match verify khi link OAuth provider khác (§8.3)
+--   'change_email'    TTL 24h   — đổi email chính (§18.5 OQ-5)
+-- payload JSONB: metadata tùy purpose, vd link_oauth: {provider, provider_user_id, provider_email}
 CREATE TABLE email_verification_tokens (
     token_hash      BYTEA PRIMARY KEY,                -- SHA-256 raw
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    purpose         VARCHAR(20) NOT NULL,    -- 'verify_email' | 'reset_password'
+    purpose         VARCHAR(20) NOT NULL,
+    payload         JSONB,                            -- null nếu không cần metadata
     expires_at      TIMESTAMPTZ NOT NULL,
     used_at         TIMESTAMPTZ,
     created_at      TIMESTAMPTZ DEFAULT NOW()
