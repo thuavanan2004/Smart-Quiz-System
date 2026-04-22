@@ -8,31 +8,45 @@ File này được auto-load vào mọi session Claude Code khi cwd = repo root.
 Dự án ở giai đoạn **pre-code**: thiết kế đầy đủ, schema DB đã chuẩn, stack dev
 local đã dựng qua docker-compose. Chưa có service nào được scaffold.
 
-Khi user yêu cầu "build X service", phải **đi theo design doc tương ứng** trong
-`docs/` — không được tự ý đổi kiến trúc.
+**Phạm vi code đi theo `docs/scope-datn.md`** (ADR-003). Các file
+`docs/*-service-design.md` là **tài liệu tham chiếu kiến trúc production** —
+đọc để hiểu design choice và thuật toán, nhưng **không implement đầy đủ** trong
+DATN. Khi user yêu cầu "build X service", bám `scope-datn.md` trước, doc
+service sau.
 
-## 2. Stack — không thảo luận lại nếu không cần
+Tóm tắt scope DATN: **4 service** (Auth, Core, AI, Proctoring), **1 PG duy nhất**
+(drop Mongo/ClickHouse/Elasticsearch), **JSON event** (không Avro), **REST**
+(không gRPC), **single-tenant** (không `org_id`). Chi tiết ở `docs/scope-datn.md`.
+
+## 2. Stack — scope DATN
 
 | Layer | Công nghệ |
 |-------|-----------|
-| Backend (Auth / Exam / Question / Analytics / Cheat-Detection) | Java 21 LTS + Spring Boot 3.3+ + Gradle multi-project |
+| Backend (Auth / Core / Proctoring) | Java 21 LTS + Spring Boot 3.3+ + Gradle multi-project |
 | AI Service | Python 3.12 + FastAPI + Pydantic v2 + aiokafka |
 | Frontend | Next.js 15 (App Router) + React 19 + TypeScript strict |
+| Database | **1 PostgreSQL** (schema riêng per service) + Redis (cache/session/WS pubsub) |
+| Messaging | Kafka (6 topic, JSON payload, version qua tên topic `.v1`) |
+| Inter-service RPC | **REST + JSON** (không gRPC trong DATN) |
 | Build Java | Gradle (wrapper pinned) + Spotless + Checkstyle + JaCoCo |
 | Build TS | pnpm + ESLint + Prettier + tsc strict |
 | Build Python | uv (lock) + ruff + black + mypy |
 | Test | JUnit 5 + Testcontainers · pytest + testcontainers-python · Vitest + Playwright |
-| Migration | Flyway (PG) · migrate-mongo · clickhouse-migrations |
-| Contracts | Avro qua Apicurio Schema Registry (BACKWARD compat mode) |
+| Migration | Flyway (PG) |
+| Contracts | **JSON Schema** ở `shared-contracts/events/` (không Avro/Apicurio) |
 | Auth giữa service | JWT RS256 + JWKS (Auth Service là IDP) |
-| Observability | Micrometer / prometheus-fastapi-instrumentator · OpenTelemetry (OTLP) · Loki |
+| Observability | Micrometer + Prometheus + log console (OTel/Loki là future work) |
 
-## 3. NFR đã lock — không thay đổi tuỳ ý
+**Future work (giữ trong docs nhưng không code)**: MongoDB, ClickHouse, Elasticsearch, Avro + Apicurio, gRPC, Flink. Xem `docs/scope-datn.md` §3 và §9.
 
-- **SLA**: 99.9% single-region
-- **RPO đáp án thi**: ≤ 5s, đạt qua **transactional outbox pattern** — PG ghi đáp án + outbox row trong 1 transaction, relayer process đẩy sang Kafka. Redis là cache write-through, không phải nguồn truth.
-- **Fencing token** cho attempt state transition — thêm `state_version BIGINT` khi touch bảng `exam_attempts` (chưa có, phải bổ sung khi scaffold Exam Service).
+## 3. NFR đã lock — scope DATN (ADR-003)
+
+- **SLA**: best-effort (demo được, có thể restart). Production target 99.9% giữ trong doc gốc.
+- **RPO đáp án thi**: ≤ **30s**, đạt qua **transactional outbox pattern** — PG ghi đáp án + outbox row trong 1 transaction, relayer poll mỗi 5s đẩy sang Kafka. Redis là cache write-through, không phải nguồn truth.
+- **Fencing token** cho attempt state transition — `state_version BIGINT` trên `exam_attempts` (bắt buộc, rẻ, defend được).
 - **Consumer at-least-once + idempotent** — dedupe bằng `event_id` lưu `processed_events` per service.
+- **JWT RS256 + JWKS** — Auth Service là IDP, mọi service verify token qua JWKS cache 1h.
+- **Single-tenant**: không có `org_id` trong bảng/event.
 
 Nếu user yêu cầu đổi một trong những cái trên → phải **push back rõ ràng** và
 đòi quyết định ghi ADR (`docs/adr/ADR-XXX.md`).
@@ -93,7 +107,7 @@ Frontend React / Next.js (Vercel Engineering):
 
 Doc export + vision:
 - **minimax-docx / minimax-xlsx / pptx-generator**: export báo cáo, bảng điểm, slide.
-- **vision-analysis**: phân tích ảnh (proctoring L5 hoặc review mockup UI).
+- **vision-analysis**: phân tích ảnh (review mockup UI — proctoring video là future work).
 
 Skill design (có sẵn từ trước): `design-kickoff`, `design-review`, `threat-modeling`, `tech-selection`, `requirements-discovery`, `adr-writer` — dùng khi mở rộng thiết kế.
 
@@ -109,25 +123,40 @@ Skill design (có sẵn từ trước): `design-kickoff`, `design-review`, `thre
 
 Agents chỉ biết **best practice Spring Boot chung**. Các rule **project-specific** sau **không nằm trong agents** — Claude phải chủ động áp khi code:
 
-- NFR lock ở **section 3** (outbox pattern, state_version fencing, JWT RS256 + JWKS, idempotent consumer).
-- DB migration & event schema ở các section tương ứng (Flyway naming, Avro backward-compat).
+- Scope DATN ở `docs/scope-datn.md` (4 service, 1 PG, REST, JSON event, single-tenant).
+- NFR lock ở **section 3** (outbox pattern RPO ≤30s, state_version fencing, JWT RS256 + JWKS, idempotent consumer).
+- Event JSON schema ở `shared-contracts/events/` (không Avro trong DATN).
 
-Nếu agent sinh code vi phạm rule project → stop, sửa theo CLAUDE.md, rồi mới tiếp.
+Nếu agent sinh code vi phạm rule project → stop, sửa theo CLAUDE.md + scope-datn.md, rồi mới tiếp.
 
 ## 8. Tài liệu tham chiếu nhanh
 
-- Kiến trúc tổng: `docs/design.md`
-- Database layout & rationale: `docs/database.md`
-- Mỗi service: `docs/<service>-service-design.md`
-- Topic Kafka: `shared-contracts/avro/TOPICS.md`
-- Schema DDL: `database/{postgresql,mongodb,clickhouse,elasticsearch,redis}/`
+- **Scope DATN (source of truth cho phạm vi code)**: `docs/scope-datn.md`
+- **ADR chủ đạo**: `docs/adr/ADR-003-datn-scope.md`
+- **Kiến trúc tổng (DATN)**: `docs/design.md`
+- **Database (DATN)**: `docs/database.md` — PG + pgvector
+- **Service design (DATN)**:
+  - `docs/auth-service-design.md`
+  - `docs/core-service-design.md` (gộp Exam + Question + Analytics)
+  - `docs/ai-service-design.md` (Combo A — upload→gen, tutor, detector)
+  - `docs/proctoring-service-design.md` (L1–L3)
+- **Topic Kafka + JSON schema**: `shared-contracts/events/` (sẽ tạo khi scaffold)
+- **Schema DDL DATN**: `database/postgresql/` (Mongo/ClickHouse/ES là future work)
+- **Archive production design**: `docs/archive/production-design/` — chỉ tham khảo khi defend "scale thế nào", KHÔNG implement theo.
 
 ## 9. Điểm cần làm trước khi scaffold service đầu tiên
 
-Các gap đã biết (xem lịch sử review trong commit message):
-
-1. Tạo ADR cho quyết định SLA 99.9% + RPO ≤5s + outbox pattern.
-2. Tạo ADR gộp/tách Analytics và Cheating Detection (hiện còn bỏ ngỏ).
-3. Viết OpenAPI cho Auth (critical path) trước khi frontend code login.
-4. Bổ sung column `state_version BIGINT` vào `exam_attempts` khi migrate Exam schema — fencing token cho suspend race.
-5. Sinh JWT keypair: `ops/gen-jwt-keypair.sh` (chưa tạo).
+1. ✅ ADR-001 SLA/RPO/outbox — đã có.
+2. ✅ ADR-002 Analytics/Cheating — superseded bởi ADR-003 (Analytics gộp vào Core).
+3. ✅ ADR-003 DATN scope — đã có.
+4. ✅ Docs DATN-scope đã viết (`design.md`, `database.md`, 4 service design).
+5. Tạo ADR-004 (drop MongoDB → PG JSONB cho question).
+6. Tạo ADR-005 (drop ClickHouse → PG view cho analytics).
+7. Tạo ADR-006 (Combo A AI feature: upload→gen, tutor, detector).
+8. Tạo ADR-007 (pgvector thay vector DB riêng).
+9. Rewrite `database/postgresql/schema.sql` theo `docs/database.md` (drop `org_id`, merge 3 schema).
+10. Viết OpenAPI cho Auth (critical path) trước khi frontend code login.
+11. Sinh JWT keypair: `ops/gen-jwt-keypair.sh` (chưa tạo).
+12. Tạo `shared-contracts/events/` với 10 JSON schema topic DATN.
+13. Rà `infra/docker-compose.dev.yml`: đổi PG image sang `pgvector/pgvector:pg16`; disable Mongo, CH, ES, Flink, Apicurio.
+14. Tạo `ops/llm-api-keys.example.env` cho AI service.
