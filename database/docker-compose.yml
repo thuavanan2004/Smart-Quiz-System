@@ -25,7 +25,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./postgresql/migrations/V0001__baseline_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./postgresql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./postgresql/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d smartquiz"]
@@ -57,8 +57,10 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # Redis 7
+  # Redis 7 — redis-hot: durable (session thi, risk, pub/sub)
   # ---------------------------------------------------------------------------
+  # Topology khớp docs/redis/schema.md: 2 cluster tách để tránh evict nhầm
+  # session thi. Local dev cùng image, khác config để parity với prod.
   redis:
     image: redis:7-alpine
     container_name: sq_redis
@@ -67,10 +69,33 @@ services:
       --appendonly yes
       --appendfsync everysec
       --save 300 10
+      --maxmemory-policy noeviction
     ports:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — redis-cache: LRU (cache nóng, rate limit, OTP, AI cache)
+  # ---------------------------------------------------------------------------
+  redis-cache:
+    image: redis:7-alpine
+    container_name: sq_redis_cache
+    command: >
+      redis-server
+      --appendonly no
+      --save 300 10
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6380:6379"
+    volumes:
+      - rediscachedata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -145,5 +170,6 @@ volumes:
   pgdata:
   mongodata:
   redisdata:
+  rediscachedata:
   chdata:
   esdata:

@@ -4,27 +4,27 @@
 
 | File | Mô tả |
 | ---- | ----- |
-| `migrations/V0001__baseline_schema.sql` | Baseline ENUM + bảng + FK + index (single source of truth, Flyway-managed) |
-| `migrations/V1776521023__add_outbox_and_fencing.sql` | Outbox + fencing token (ADR-001) |
-| `seed.sql`   | Dữ liệu mẫu: 3 org, 8 users, 3 exams, 3 attempts, certificates... (KHÔNG qua Flyway — chỉ dùng cho dev local) |
+| `schema.sql` | Toàn bộ schema (ENUM, bảng, FK, index, outbox, fencing token). Single source of truth. |
+| `seed.sql`   | Dữ liệu mẫu: 3 org, 8 users, 3 exams, 3 attempts, certificates... (chỉ dev local) |
 
 ## Tổng hợp Schema
 
-**28 bảng / 3 ENUM types:**
+**30 bảng / 3 ENUM types:**
 
 | Nhóm | Bảng |
 | ---- | ---- |
 | Tổ chức & Người dùng | `organizations`, `users`, `user_organizations`, `oauth_providers`, `refresh_tokens` |
-| **RBAC động** | `roles`, `permissions`, `role_permissions` (thay cho enum `user_role` cũ) |
+| **RBAC động** | `roles`, `permissions`, `role_permissions` |
 | Bài thi & Cấu hình | `subjects`, `exams`, `exam_sections`, `exam_questions`, `exam_enrollments` |
-| Lượt thi | `exam_attempts`, `attempt_answers` |
+| Lượt thi | `exam_attempts` (có `state_version` fencing token), `attempt_answers` |
 | Chống gian lận | `cheat_events`, `proctoring_sessions` |
 | Kết quả | `grading_rubrics`, `attempt_feedback`, `certificates` |
 | **Auth mở rộng** | `password_history`, `mfa_backup_codes`, `email_verification_tokens`, `audit_log_auth` |
 | **AI Service** | `ai_jobs`, `ai_cost_ledger`, `ai_budgets` |
 | **Cheating mở rộng** | `cheat_review_queue`, `cheat_appeals` |
+| **Reliability (ADR-001)** | `outbox`, `processed_events` |
 
-**ENUM:** `exam_status`, `attempt_status`, `cheat_event_type` (đã remove `user_role` — chuyển sang bảng `roles`)
+**ENUM:** `exam_status`, `attempt_status`, `cheat_event_type`
 
 **Extensions:** `pgcrypto` (UUID), `citext`, `pg_trgm`
 
@@ -40,7 +40,7 @@ docker compose up -d postgres
 docker exec -it sq_postgres psql -U postgres -d smartquiz -c "\dt"
 ```
 
-`migrations/V0001__baseline_schema.sql` + `seed.sql` đã được mount vào initdb → chạy tự động lần đầu. Các migration sau (V1776521023…) do Flyway chạy khi service boot.
+`schema.sql` + `seed.sql` đã được mount vào `docker-entrypoint-initdb.d/` → chạy tự động lần đầu khi volume trống.
 
 ## Cách 2: Cài native trên Windows
 
@@ -67,8 +67,7 @@ CREATE DATABASE smartquiz;
 ```bash
 cd D:\SmartQuizSystem\database\postgresql
 
-psql -U postgres -d smartquiz -f migrations/V0001__baseline_schema.sql
-psql -U postgres -d smartquiz -f migrations/V1776521023__add_outbox_and_fencing.sql
+psql -U postgres -d smartquiz -f schema.sql
 psql -U postgres -d smartquiz -f seed.sql
 ```
 
@@ -130,3 +129,7 @@ WHERE a.exam_id = 'c0000000-0000-0000-0000-000000000001'
   AND a.status = 'graded'
 ORDER BY a.percentage_score DESC;
 ```
+
+## Ghi chú về migration sau này
+
+Khi service thật bắt đầu chạy Flyway, schema này trở thành **baseline**. Tạo migration mới theo convention Flyway (`V<timestamp>__<description>.sql`) trong thư mục riêng của từng service — **không sửa trực tiếp `schema.sql`** (để `docker-entrypoint-initdb.d/` vẫn clone được môi trường local từ đầu).

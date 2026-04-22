@@ -1,5 +1,4 @@
 {
-    "_comment": "Smart Quiz System - Elasticsearch 8 index mapping. Chạy bằng: curl -X PUT http://localhost:9200/question_search -H 'Content-Type: application/json' -d @schema.json. PROD: cân nhắc cài plugin analysis-vietnamese hoặc ICU để tokenize từ ghép tiếng Việt (hiện dùng standard tokenizer là baseline).",
     "settings": {
         "number_of_shards": 3,
         "number_of_replicas": 1,

@@ -121,9 +121,9 @@ docker compose -f infra/docker-compose.dev.yml down -v
 # CLI
 docker exec -it sq_postgres psql -U postgres -d smartquiz
 
-# Chạy migration thủ công (Flyway tự chạy khi service boot, mục này là fallback)
+# Chạy schema thủ công (Docker initdb tự chạy lần đầu, mục này là fallback khi cần re-apply)
 docker exec -i sq_postgres psql -U postgres -d smartquiz \
-  < database/postgresql/migrations/V0001__baseline_schema.sql
+  < database/postgresql/schema.sql
 
 # Seed dữ liệu mẫu
 docker exec -i sq_postgres psql -U postgres -d smartquiz \
@@ -133,7 +133,7 @@ docker exec -i sq_postgres psql -U postgres -d smartquiz \
 docker exec sq_postgres psql -U postgres -d smartquiz -c "\dt"
 ```
 
-**Flyway**: mỗi service Java có `spring.flyway.locations=filesystem:../../database/postgresql/migrations`. Lần boot đầu, Flyway `baseline-on-migrate=true` tạo baseline → các migration tiếp theo (V1776521023…) chạy tự động.
+**Schema file**: `database/postgresql/schema.sql` là single source of truth, được mount vào `docker-entrypoint-initdb.d/` (xem `database/docker-compose.yml`). Khi service Java cần Flyway sau này, dùng schema.sql làm baseline và tạo migration riêng trong thư mục service.
 
 **GUI khuyến nghị**: pgAdmin 4, DBeaver, hoặc TablePlus.
 
@@ -505,17 +505,19 @@ Fix:
 # Đợi auth log "Started AuthServiceApplication" rồi start service khác.
 ```
 
-### 10.3 Flyway migration fail "relation exam_attempts does not exist"
+### 10.3 PostgreSQL volume mount trống / schema chưa load
 
-Nguyên nhân: DB trống, V1776521023 (ALTER exam_attempts) chạy trước V0001.
+Nguyên nhân: volume `pgdata` đã tồn tại từ lần chạy trước nhưng initdb không apply lại. Docker entrypoint chỉ chạy `docker-entrypoint-initdb.d/` khi volume **trống hoàn toàn**.
 
 Fix:
 ```bash
-# Baseline bằng tay nếu Flyway không auto-baseline
-docker exec -i sq_postgres psql -U postgres -d smartquiz \
-  < database/postgresql/migrations/V0001__baseline_schema.sql
+# Xoá volume + restart
+docker compose -f database/docker-compose.yml down -v
+docker compose -f database/docker-compose.yml up -d postgres
 
-# Sau đó restart service — Flyway sẽ tiếp tục từ V1776521023.
+# Hoặc apply schema thủ công
+docker exec -i sq_postgres psql -U postgres -d smartquiz \
+  < database/postgresql/schema.sql
 ```
 
 ### 10.4 Docker image pull chậm / lỗi mạng

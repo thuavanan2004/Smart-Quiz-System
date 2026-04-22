@@ -76,9 +76,10 @@ db.createCollection('questions', {
                     bsonType: 'object',
                     properties: {
                         difficulty_assigned: { bsonType: 'int', minimum: 1, maximum: 5 },
-                        b:              { bsonType: 'double' },
-                        a:              { bsonType: 'double' },
-                        c:              { bsonType: 'double' },
+                        // Cho phép int và double để mongosh nhập `0` (int) vẫn qua được validator.
+                        b:              { bsonType: ['double', 'int'] },
+                        a:              { bsonType: ['double', 'int'] },
+                        c:              { bsonType: ['double', 'int'] },
                         calibrated:     { bsonType: 'bool' },
                         calibrated_at:  { bsonType: ['date', 'null'] },
                         responses_count:{ bsonType: 'int' }
@@ -89,9 +90,9 @@ db.createCollection('questions', {
                     properties: {
                         times_used:     { bsonType: 'int' },
                         correct_count:  { bsonType: 'int' },
-                        correct_rate:   { bsonType: 'double' },
+                        correct_rate:   { bsonType: ['double', 'int'] },
                         avg_time_seconds:{ bsonType: 'int' },
-                        skip_rate:      { bsonType: 'double' }
+                        skip_rate:      { bsonType: ['double', 'int'] }
                     }
                 },
                 // Vector embedding KHÔNG lưu ở Mongo để tránh duplicate storage với Elasticsearch.
@@ -129,11 +130,14 @@ db.questions.createIndex(
 //   sh.shardCollection('smartquiz.questions', { org_id: 'hashed', subject_code: 1, question_id: 1 });
 
 // Full-text index
+// language_override trỏ tới field không tồn tại để Mongo không lấy `metadata.language: 'vi'`
+// làm stemmer override ('vi' không có trong danh sách ngôn ngữ hỗ trợ của Mongo text search).
 db.questions.createIndex(
     { 'content.text': 'text', 'metadata.tags': 'text', 'metadata.topic': 'text' },
     {
         weights: { 'content.text': 10, 'metadata.tags': 5, 'metadata.topic': 3 },
-        default_language: 'none',  // Không dùng stemmer mặc định để hỗ trợ đa ngôn ngữ
+        default_language: 'none',
+        language_override: '_text_lang_unused',
         name: 'question_text_search'
     }
 );
@@ -271,16 +275,16 @@ db.createCollection('ai_prompts', {
                 template:        { bsonType: 'string' },   // Jinja2 template
                 variables:       { bsonType: 'array', items: { bsonType: 'string' } },
                 model:           { bsonType: 'string' },   // "gpt-4o"
-                temperature:     { bsonType: 'double' },
+                temperature:     { bsonType: ['double', 'int'] },
                 max_tokens:      { bsonType: 'int' },
                 response_format: { bsonType: ['object', 'null'] },  // JSON schema
                 active:          { bsonType: 'bool' },
-                traffic_weight:  { bsonType: 'double' },   // 0.0 - 1.0 cho A/B
+                traffic_weight:  { bsonType: ['double', 'int'] },   // 0.0 - 1.0 cho A/B
                 evals: {
                     bsonType: 'object',
                     properties: {
                         golden_set_size: { bsonType: 'int' },
-                        pass_rate:       { bsonType: 'double' },
+                        pass_rate:       { bsonType: ['double', 'int'] },
                         last_evaluated:  { bsonType: ['date', 'null'] }
                     }
                 },

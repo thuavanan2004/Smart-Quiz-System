@@ -4,7 +4,7 @@
 
 | File | Mô tả |
 | ---- | ----- |
-| `schema.sql` | 3 bảng fact + 3 materialized view |
+| `schema.sql` | 6 bảng fact + 5 materialized view |
 | `seed.sql`   | 30 ngày dữ liệu mẫu (5 attempts, 14 answers, 6 cheat events) |
 
 ## Tổng hợp Schema

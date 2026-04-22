@@ -106,8 +106,8 @@ docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.obs.yml u
 ```
 .claude/                 # Skills + settings cho Claude Code
 config/checkstyle/       # Checkstyle config dùng chung cho toàn bộ Java service
-database/                # DDL + migration gốc (PG, Mongo, ClickHouse, ES, Redis)
-  postgresql/migrations/ # Flyway V0001 baseline + migration tiếp theo
+database/                # Schema + seed (PG, Mongo, ClickHouse, ES, Redis)
+  postgresql/schema.sql  # Single source of truth cho schema PG
 docs/                    # Design docs 7 service + database + ADR
   adr/                   # Architecture Decision Records
 gradle/, gradlew, *.kts  # Gradle multi-project (Spring Boot services)

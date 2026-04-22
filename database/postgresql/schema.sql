@@ -1,22 +1,43 @@
 -- =============================================================================
--- V0001__baseline_schema.sql — PostgreSQL 16 baseline schema
+-- schema.sql — PostgreSQL 16 | SmartQuizSystem
 -- =============================================================================
--- Toàn bộ ENUM, bảng, FK, index của PostgreSQL.
--- Là Flyway baseline: migration đầu tiên khi Flyway chạy trên DB trống.
--- Đồng thời được mount vào Docker initdb để PG container tự seed schema
--- khi volume trống (xem infra/docker-compose.dev.yml + database/docker-compose.yml).
+-- Single source of truth cho toàn bộ schema PostgreSQL.
+-- Mount vào Docker initdb (xem database/docker-compose.yml) để container tự
+-- khởi tạo schema khi volume trống. Chạy thủ công:
+--     psql -U postgres -d smartquiz -f schema.sql
+--
+-- MỤC LỤC
+--   1.  Extensions
+--   2.  ENUM types
+--   3.  Organizations & Users
+--   4.  RBAC động (roles / permissions / role_permissions / user_organizations)
+--   5.  Identity & Session (oauth_providers / refresh_tokens)
+--   6.  Subjects, Exams, Sections, Questions, Enrollments
+--   7.  Attempts & Answers (+ fencing token state_version)
+--   8.  Cheat events & Proctoring
+--   9.  Grading, Feedback, Certificates
+--   10. Auth mở rộng (password_history, mfa_backup_codes, email_verification_tokens, audit_log_auth)
+--   11. AI service (ai_jobs, ai_cost_ledger, ai_budgets)
+--   12. Cheating review (cheat_review_queue, cheat_appeals)
+--   13. Reliability (outbox, processed_events) — ADR-001
+--   14. Triggers (updated_at)
+--   15. Roles & grants (optional, commented)
 -- =============================================================================
 
--- Extensions cần thiết
+
+-- =============================================================================
+-- 1. EXTENSIONS
+-- =============================================================================
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";      -- gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS "citext";        -- case-insensitive text
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";       -- trigram search
 
+
 -- =============================================================================
--- 1. ENUM TYPES
+-- 2. ENUM TYPES
 -- =============================================================================
--- NOTE: user_role ENUM đã REMOVED (trước đây hardcode 4 giá trị).
--- Thay bằng bảng roles/permissions/role_permissions (xem mục 2a) để RBAC động.
+-- NOTE: user_role ENUM đã REMOVED. Role/permission chuyển sang bảng động
+-- (xem section 4) để hỗ trợ custom role per-org + permission-based RBAC.
 
 CREATE TYPE exam_status AS ENUM (
     'draft', 'published', 'scheduled', 'active', 'completed', 'archived'
@@ -36,8 +57,9 @@ CREATE TYPE cheat_event_type AS ENUM (
     'answer_similarity','sync_submission','score_anomaly'
 );
 
+
 -- =============================================================================
--- 2. NHÓM TỔ CHỨC & NGƯỜI DÙNG
+-- 3. ORGANIZATIONS & USERS
 -- =============================================================================
 
 CREATE TABLE organizations (
@@ -80,20 +102,20 @@ CREATE TABLE users (
     deleted_at          TIMESTAMPTZ
 );
 
--- Note: email đã có UNIQUE constraint (btree tự tạo). Partial index bổ sung
--- cho query theo email của tài khoản còn active, kèm pg_trgm cho tìm theo tên.
-CREATE INDEX idx_users_email_active ON users(email)       WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_active       ON users(is_active)   WHERE is_active = true AND deleted_at IS NULL;
-CREATE INDEX idx_users_last_login   ON users(last_login_at DESC);
+-- email đã có UNIQUE (btree tự tạo). Index bổ sung cho query tài khoản còn sống + tìm theo tên.
+CREATE INDEX idx_users_email_active  ON users(email)     WHERE deleted_at IS NULL;
+CREATE INDEX idx_users_active        ON users(is_active) WHERE is_active = true AND deleted_at IS NULL;
+CREATE INDEX idx_users_last_login    ON users(last_login_at DESC);
 CREATE INDEX idx_users_fullname_trgm ON users USING GIN (full_name gin_trgm_ops);
 
+
 -- =============================================================================
--- 2a. RBAC DỘNG: roles / permissions / role_permissions
+-- 4. RBAC ĐỘNG
 -- =============================================================================
 -- Thay thế user_role ENUM hardcoded. Hỗ trợ:
 --   - 4 role hệ thống (is_system=true): student, instructor, admin, proctor
 --   - Role tuỳ biến theo org (is_system=false, org_id != NULL)
---   - Permission-based RBAC (service check hasAuthority('exam.update') thay vì hasRole)
+--   - Permission-based enforcement (hasAuthority('exam.update') thay vì hasRole).
 
 CREATE TABLE roles (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -117,7 +139,7 @@ CREATE TABLE permissions (
     code         VARCHAR(100) UNIQUE NOT NULL,   -- 'exam.create', 'question.approve', 'user.impersonate'
     resource     VARCHAR(50) NOT NULL,           -- 'exam', 'question', 'user', 'attempt', 'cheat', 'analytics', 'ai'
     action       VARCHAR(50) NOT NULL,           -- 'create','read','update','delete','grade','approve','impersonate'...
-    scope        VARCHAR(20) DEFAULT 'org',      -- 'own'|'org'|'platform'  (mở rộng enforcement)
+    scope        VARCHAR(20) DEFAULT 'org',      -- 'own'|'org'|'platform'
     description  TEXT,
     is_system    BOOLEAN DEFAULT true            -- false nếu permission do org tạo (Phase 3)
 );
@@ -132,9 +154,6 @@ CREATE TABLE role_permissions (
 );
 CREATE INDEX idx_role_perms_role ON role_permissions(role_id);
 
--- =============================================================================
--- 2b. USER ↔ ORG (role chuyển sang role_id FK)
--- =============================================================================
 CREATE TABLE user_organizations (
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -149,6 +168,11 @@ CREATE INDEX idx_user_orgs_user ON user_organizations(user_id);
 CREATE INDEX idx_user_orgs_org  ON user_organizations(org_id, role_id);
 CREATE INDEX idx_user_orgs_role ON user_organizations(role_id);
 
+
+-- =============================================================================
+-- 5. IDENTITY & SESSION
+-- =============================================================================
+
 CREATE TABLE oauth_providers (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -160,10 +184,13 @@ CREATE TABLE oauth_providers (
 
 CREATE UNIQUE INDEX idx_oauth_provider ON oauth_providers(provider, provider_user_id);
 
+-- refresh_tokens: active_org_id persist org active để switch-org + refresh giữ ngữ cảnh
+-- đúng (auth-service-design.md §12.2).
 CREATE TABLE refresh_tokens (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash          BYTEA UNIQUE NOT NULL,       -- SHA-256 raw (32 bytes); tiết kiệm & so sánh nhanh hơn hex VARCHAR(64)
+    token_hash          BYTEA UNIQUE NOT NULL,       -- SHA-256 raw (32 bytes)
+    active_org_id       UUID REFERENCES organizations(id) ON DELETE SET NULL,
     device_fingerprint  VARCHAR(128),
     user_agent          VARCHAR(512),
     ip_address          INET,
@@ -176,8 +203,9 @@ CREATE TABLE refresh_tokens (
 CREATE INDEX idx_refresh_user  ON refresh_tokens(user_id, expires_at);
 CREATE INDEX idx_refresh_token ON refresh_tokens(token_hash);
 
+
 -- =============================================================================
--- 3. NHÓM BÀI THI & CẤU HÌNH
+-- 6. SUBJECTS, EXAMS, SECTIONS, QUESTIONS, ENROLLMENTS
 -- =============================================================================
 
 CREATE TABLE subjects (
@@ -190,7 +218,7 @@ CREATE TABLE subjects (
     is_active   BOOLEAN DEFAULT true
 );
 
-CREATE INDEX idx_subjects_org ON subjects(org_id);
+CREATE INDEX idx_subjects_org  ON subjects(org_id);
 CREATE INDEX idx_subjects_code ON subjects(code);
 
 CREATE TABLE exams (
@@ -276,19 +304,25 @@ CREATE TABLE exam_enrollments (
 
 CREATE UNIQUE INDEX idx_enrollment ON exam_enrollments(exam_id, user_id);
 
+
 -- =============================================================================
--- 4. NHÓM LƯỢT THI & ĐÁP ÁN
+-- 7. ATTEMPTS & ANSWERS
 -- =============================================================================
--- PARTITIONING NOTE (quan trọng khi chạy production):
---   exam_attempts và attempt_answers sẽ >60M rows/năm ở quy mô 100K MAU.
---   Khi đạt ~10M rows (ước 6 tháng), migrate sang partitioned table:
---     1) Đổi PK: (id, started_at)  -- PG yêu cầu PK chứa partition key
---     2) `PARTITION BY RANGE (started_at)`, dùng pg_partman tạo partition tháng.
+-- PARTITIONING NOTE (production):
+--   exam_attempts + attempt_answers sẽ >60M rows/năm ở quy mô 100K MAU.
+--   Khi đạt ~10M rows, migrate sang partitioned table:
+--     1) Đổi PK (id, started_at) — PG yêu cầu PK chứa partition key.
+--     2) PARTITION BY RANGE (started_at), dùng pg_partman tạo partition tháng.
 --     3) Cập nhật các FK trỏ tới exam_attempts (attempt_answers, cheat_events,
 --        proctoring_sessions, certificates, cheat_review_queue, cheat_appeals,
 --        attempt_feedback) để reference (id, started_at).
---   Migration phải coordinate downtime + recreate FK — không tự động được.
---   Xem docs/database.md mục "Partitioning Strategy" cho kịch bản chi tiết.
+--   Migration cần coordinate downtime + recreate FK. Xem docs/database.md
+--   mục "Partitioning Strategy".
+--
+-- FENCING TOKEN (ADR-001):
+--   state_version tăng 1 mỗi UPDATE exam_attempts (optimistic lock qua JPA
+--   @Version hoặc WHERE state_version = ? ở native SQL). Giải quyết race giữa
+--   Exam Service (submit) và Cheating Detection (auto-suspend khi risk >= 60).
 
 CREATE TABLE exam_attempts (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -296,6 +330,7 @@ CREATE TABLE exam_attempts (
     user_id                     UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     attempt_number              SMALLINT DEFAULT 1,
     status                      attempt_status DEFAULT 'in_progress',
+    state_version               BIGINT NOT NULL DEFAULT 0,
     started_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     submitted_at                TIMESTAMPTZ,
     graded_at                   TIMESTAMPTZ,
@@ -318,13 +353,16 @@ CREATE TABLE exam_attempts (
     adaptive_se                 FLOAT8
 );
 
+COMMENT ON COLUMN exam_attempts.state_version IS
+    'Fencing token cho state transition. Tăng 1 mỗi UPDATE (optimistic lock).';
+
 CREATE INDEX idx_attempts_exam_user   ON exam_attempts(exam_id, user_id);
 CREATE INDEX idx_attempts_active      ON exam_attempts(status, expires_at) WHERE status = 'in_progress';
 CREATE INDEX idx_attempts_flagged     ON exam_attempts(flagged_for_review) WHERE flagged_for_review = true;
 CREATE UNIQUE INDEX idx_one_active_attempt ON exam_attempts(exam_id, user_id) WHERE status = 'in_progress';
 CREATE INDEX idx_attempts_exam_perf   ON exam_attempts(exam_id, status, raw_score, percentage_score)
     WHERE status IN ('submitted','graded');
-CREATE INDEX idx_attempts_user_recent ON exam_attempts(user_id, started_at DESC);   -- lịch sử thi của 1 user
+CREATE INDEX idx_attempts_user_recent ON exam_attempts(user_id, started_at DESC);
 
 CREATE TABLE attempt_answers (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -344,13 +382,14 @@ CREATE TABLE attempt_answers (
     submission_id           UUID UNIQUE NOT NULL DEFAULT gen_random_uuid()
 );
 
-CREATE INDEX idx_answers_attempt     ON attempt_answers(attempt_id, exam_question_id);
-CREATE INDEX idx_answers_question    ON attempt_answers(question_ref_id);
-CREATE INDEX idx_answers_graded_man  ON attempt_answers(graded_by, answered_at)
-    WHERE grading_method = 'manual';                  -- review queue của giáo viên chấm tay
+CREATE INDEX idx_answers_attempt    ON attempt_answers(attempt_id, exam_question_id);
+CREATE INDEX idx_answers_question   ON attempt_answers(question_ref_id);
+CREATE INDEX idx_answers_graded_man ON attempt_answers(graded_by, answered_at)
+    WHERE grading_method = 'manual';
+
 
 -- =============================================================================
--- 5. NHÓM CHỐNG GIAN LẬN & GIÁM SÁT
+-- 8. CHEAT EVENTS & PROCTORING
 -- =============================================================================
 
 CREATE TABLE cheat_events (
@@ -395,8 +434,9 @@ CREATE TABLE proctoring_sessions (
     ended_at                TIMESTAMPTZ
 );
 
+
 -- =============================================================================
--- 6. NHÓM KẾT QUẢ, PHẢN HỒI & CHỨNG CHỈ
+-- 9. GRADING, FEEDBACK, CERTIFICATES
 -- =============================================================================
 
 CREATE TABLE grading_rubrics (
@@ -442,10 +482,11 @@ CREATE TABLE certificates (
 CREATE INDEX idx_cert_user      ON certificates(user_id);
 CREATE INDEX idx_cert_verify    ON certificates(verification_hash);
 CREATE INDEX idx_cert_number    ON certificates(certificate_number);
-CREATE INDEX idx_cert_exam_user ON certificates(exam_id, user_id);   -- cấp lại chứng chỉ
+CREATE INDEX idx_cert_exam_user ON certificates(exam_id, user_id);
+
 
 -- =============================================================================
--- 7. AUTH SERVICE MỞ RỘNG (từ auth-service-design.md mục IV)
+-- 10. AUTH MỞ RỘNG (auth-service-design.md §IV)
 -- =============================================================================
 
 -- Chống tái sử dụng mật khẩu (5 lần gần nhất)
@@ -457,12 +498,12 @@ CREATE TABLE password_history (
 );
 CREATE INDEX idx_pwd_history_user ON password_history(user_id, changed_at DESC);
 
--- Backup codes MFA (10 code/user, mỗi code dùng 1 lần)
--- Khuyến nghị app: hash bằng argon2id (chậm hơn SHA-256, chống brute-force nếu bảng rò rỉ).
+-- Backup codes MFA (10 code/user, mỗi code dùng 1 lần).
+-- Hash nên dùng argon2id (chậm hơn SHA-256, chống brute-force nếu bảng rò rỉ).
 CREATE TABLE mfa_backup_codes (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    code_hash       BYTEA NOT NULL,                   -- argon2id hoặc SHA-256 raw
+    code_hash       BYTEA NOT NULL,
     used_at         TIMESTAMPTZ,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -479,13 +520,13 @@ CREATE TABLE email_verification_tokens (
 );
 CREATE INDEX idx_evt_user ON email_verification_tokens(user_id, purpose);
 
--- Audit log quan trọng của Auth (partition theo tháng, giữ 12 tháng)
+-- Audit log quan trọng của Auth (partition theo tháng, giữ 12 tháng).
 -- PK phải chứa partition key (created_at) theo yêu cầu của PostgreSQL.
 CREATE TABLE audit_log_auth (
     id              UUID DEFAULT gen_random_uuid(),
     user_id         UUID,
-    actor_id        UUID,                    -- ai gây ra action (admin hoặc user)
-    event           VARCHAR(40) NOT NULL,    -- 'login_success','login_failed','password_changed','mfa_enabled','mfa_disabled','role_changed','account_locked'
+    actor_id        UUID,
+    event           VARCHAR(40) NOT NULL,
     ip_address      INET,
     user_agent      VARCHAR(512),
     meta            JSONB DEFAULT '{}'::jsonb,
@@ -493,23 +534,36 @@ CREATE TABLE audit_log_auth (
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
--- Partition ban đầu (mỗi tháng một partition, tự động tạo tiếp bằng pg_partman hoặc cron job).
+-- Partition seed cho 2026 (tháng 4 → hết 2026). Sau đó production phải dùng
+-- pg_partman auto-create partition tháng mới + DROP partition > 12 tháng;
+-- xem ops/pg/create-audit-partitions.sh (TODO) hoặc cron job tạo tháng tiếp.
 CREATE TABLE audit_log_auth_y2026m04 PARTITION OF audit_log_auth
     FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
 CREATE TABLE audit_log_auth_y2026m05 PARTITION OF audit_log_auth
     FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
 CREATE TABLE audit_log_auth_y2026m06 PARTITION OF audit_log_auth
     FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
--- TODO: dùng pg_partman để auto-create partition tháng + DROP partition > 12 tháng.
+CREATE TABLE audit_log_auth_y2026m07 PARTITION OF audit_log_auth
+    FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
+CREATE TABLE audit_log_auth_y2026m08 PARTITION OF audit_log_auth
+    FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
+CREATE TABLE audit_log_auth_y2026m09 PARTITION OF audit_log_auth
+    FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
+CREATE TABLE audit_log_auth_y2026m10 PARTITION OF audit_log_auth
+    FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
+CREATE TABLE audit_log_auth_y2026m11 PARTITION OF audit_log_auth
+    FOR VALUES FROM ('2026-11-01') TO ('2026-12-01');
+CREATE TABLE audit_log_auth_y2026m12 PARTITION OF audit_log_auth
+    FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
 
 CREATE INDEX idx_audit_auth_user  ON audit_log_auth(user_id, created_at DESC);
 CREATE INDEX idx_audit_auth_event ON audit_log_auth(event, created_at DESC);
 
+
 -- =============================================================================
--- 8. AI SERVICE (từ ai-service-design.md mục IV)
+-- 11. AI SERVICE (ai-service-design.md §IV)
 -- =============================================================================
 
--- Job tracker (generate, grade, embed, quality)
 CREATE TABLE ai_jobs (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -520,7 +574,7 @@ CREATE TABLE ai_jobs (
     output_payload      JSONB,
     error_message       TEXT,
     model_used          VARCHAR(50),
-    prompt_version      VARCHAR(20),
+    prompt_version      VARCHAR(50),   -- {name}@{version}, name có thể dài (generate_mc_single@v3.1)
     input_tokens        INT,
     output_tokens       INT,
     cost_usd            NUMERIC(10,5),
@@ -532,7 +586,6 @@ CREATE INDEX idx_ai_jobs_status    ON ai_jobs(status, created_at);
 CREATE INDEX idx_ai_jobs_org       ON ai_jobs(org_id, job_type, created_at DESC);
 CREATE INDEX idx_ai_jobs_input_gin ON ai_jobs USING GIN (input_payload jsonb_path_ops);
 
--- Ledger chi phí AI (chi tiết từng call LLM/embedding)
 CREATE TABLE ai_cost_ledger (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -545,42 +598,43 @@ CREATE TABLE ai_cost_ledger (
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX idx_cost_org_date  ON ai_cost_ledger(org_id, created_at);
-CREATE INDEX idx_cost_org_month ON ai_cost_ledger(org_id, date_trunc('month', created_at));  -- budget check
+-- AT TIME ZONE 'UTC' biến timestamptz → timestamp không-tz để biểu thức IMMUTABLE;
+-- query budget-check phải match đúng expression: date_trunc('month', created_at AT TIME ZONE 'UTC').
+CREATE INDEX idx_cost_org_month
+    ON ai_cost_ledger(org_id, date_trunc('month', created_at AT TIME ZONE 'UTC'));
 
--- Budget tháng cho mỗi org
 CREATE TABLE ai_budgets (
     org_id              UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
     monthly_limit_usd   NUMERIC(10,2) NOT NULL,
     current_month_usd   NUMERIC(10,2) DEFAULT 0,
     current_month       DATE,
-    hard_stop           BOOLEAN DEFAULT true,    -- true = block khi vượt; false = cảnh báo
+    hard_stop           BOOLEAN DEFAULT true,
     updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
+
 -- =============================================================================
--- 9. CHEATING DETECTION SERVICE (từ cheating-detection-service-design.md mục V)
+-- 12. CHEATING DETECTION MỞ RỘNG (cheating-detection-service-design.md §V)
 -- =============================================================================
 
--- Review queue cho proctor
 CREATE TABLE cheat_review_queue (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id              UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE CASCADE,
     triggered_by_event      UUID REFERENCES cheat_events(id) ON DELETE SET NULL,
     risk_score_at_trigger   SMALLINT NOT NULL,
-    severity                VARCHAR(10) NOT NULL,  -- low|medium|high|critical
+    severity                VARCHAR(10) NOT NULL,   -- low|medium|high|critical
     assigned_to             UUID REFERENCES users(id),
     status                  VARCHAR(20) DEFAULT 'pending', -- pending|in_review|resolved|escalated
-    decision                VARCHAR(20),            -- confirmed|dismissed|escalated
+    decision                VARCHAR(20),             -- confirmed|dismissed|escalated
     decision_reason         TEXT,
     reviewed_at             TIMESTAMPTZ,
     created_at              TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE INDEX idx_review_pending ON cheat_review_queue(status, severity, created_at)
+CREATE INDEX idx_review_pending  ON cheat_review_queue(status, severity, created_at)
     WHERE status IN ('pending','in_review');
 CREATE INDEX idx_review_assignee ON cheat_review_queue(assigned_to, status)
     WHERE status IN ('pending','in_review');
 
--- Appeal từ học sinh sau khi bị confirmed cheating
 CREATE TABLE cheat_appeals (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attempt_id          UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE RESTRICT,
@@ -589,7 +643,7 @@ CREATE TABLE cheat_appeals (
     evidence_s3_keys    TEXT[] DEFAULT '{}',
     status              VARCHAR(20) DEFAULT 'pending',  -- pending|under_review|resolved
     reviewed_by         UUID REFERENCES users(id),
-    decision            VARCHAR(20),    -- upheld|overturned
+    decision            VARCHAR(20),                     -- upheld|overturned
     decision_reason     TEXT,
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     resolved_at         TIMESTAMPTZ
@@ -597,8 +651,56 @@ CREATE TABLE cheat_appeals (
 CREATE INDEX idx_appeal_user   ON cheat_appeals(user_id, created_at DESC);
 CREATE INDEX idx_appeal_status ON cheat_appeals(status, created_at) WHERE status != 'resolved';
 
+
 -- =============================================================================
--- 10. TRIGGER CẬP NHẬT updated_at TỰ ĐỘNG
+-- 13. RELIABILITY — TRANSACTIONAL OUTBOX & CONSUMER IDEMPOTENCY (ADR-001)
+-- =============================================================================
+-- Mỗi service ghi state change DOMAIN + INSERT INTO outbox trong 1 transaction.
+-- Relayer process poll table, publish Kafka, mark published_at. Partition-friendly:
+-- created_at đã có index, có thể convert PARTITION BY RANGE (created_at) khi >10M row.
+
+CREATE TABLE outbox (
+    event_id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_type   VARCHAR(50) NOT NULL,         -- "exam_attempt", "user", ...
+    aggregate_id     VARCHAR(64) NOT NULL,         -- UUID hoặc composite key dạng string
+    topic            VARCHAR(100) NOT NULL,        -- Kafka topic đích
+    event_type       VARCHAR(100) NOT NULL,        -- Logical event type
+    payload          JSONB       NOT NULL,         -- Avro-compatible JSON payload
+    headers          JSONB       DEFAULT '{}'::jsonb, -- trace_id, span_id, schema_version
+    partition_key    VARCHAR(128),                 -- key Kafka partitioning (null = random)
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at     TIMESTAMPTZ,                  -- NULL = pending
+    publish_attempts SMALLINT    NOT NULL DEFAULT 0,
+    last_error       TEXT
+);
+
+-- Relayer claim rows pending (FOR UPDATE SKIP LOCKED):
+CREATE INDEX idx_outbox_pending   ON outbox (created_at)   WHERE published_at IS NULL;
+-- Cleanup job tìm row đã publish cũ:
+CREATE INDEX idx_outbox_published ON outbox (published_at) WHERE published_at IS NOT NULL;
+
+COMMENT ON TABLE outbox IS
+    'Transactional outbox — cùng transaction với domain state change, relayer publish Kafka sau đó.';
+
+-- processed_events: per-consumer dedupe cho at-least-once Kafka.
+-- INSERT ... ON CONFLICT DO NOTHING → 0 row = event đã xử lý.
+-- MVP: 1 bảng chung với cột consumer_group. Phase 2 tách schema per service.
+CREATE TABLE processed_events (
+    event_id        UUID        NOT NULL,
+    consumer_group  VARCHAR(100) NOT NULL,    -- ví dụ "exam-service-grading-consumer"
+    topic           VARCHAR(100) NOT NULL,
+    processed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (event_id, consumer_group)
+);
+
+CREATE INDEX idx_processed_events_processed_at ON processed_events (processed_at);
+
+COMMENT ON TABLE processed_events IS
+    'Dedupe at-least-once Kafka consumer. INSERT ... ON CONFLICT DO NOTHING; nếu 0 row → đã xử lý.';
+
+
+-- =============================================================================
+-- 14. TRIGGERS
 -- =============================================================================
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
@@ -616,10 +718,14 @@ CREATE TRIGGER trg_exams_updated
     BEFORE UPDATE ON exams
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+CREATE TRIGGER trg_roles_updated
+    BEFORE UPDATE ON roles
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
 -- =============================================================================
--- 11. ROLES & GRANTS (TỐI THIỂU CHO MÔI TRƯỜNG LOCAL)
+-- 15. ROLES & GRANTS (optional, local env bỏ qua)
 -- =============================================================================
--- Khi chạy lần đầu, có thể bỏ qua phần này.
 -- CREATE ROLE svc_auth      LOGIN PASSWORD 'auth_pass'      CONNECTION LIMIT 50;
 -- CREATE ROLE svc_exam      LOGIN PASSWORD 'exam_pass'      CONNECTION LIMIT 200;
 -- CREATE ROLE svc_cheat     LOGIN PASSWORD 'cheat_pass'     CONNECTION LIMIT 100;

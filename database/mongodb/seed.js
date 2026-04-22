@@ -25,7 +25,7 @@ db.questions.insertMany([
 
     // --- 1. MULTIPLE CHOICE SINGLE -----------------------------------------
     {
-        question_id:  'q-11111111-1111-1111-1111-111111111111',
+        question_id:  '11111111-1111-1111-1111-111111111111',
         org_id:       ORG_HUST,
         subject_code: 'CS101',
         created_by:   USER_GV_NGUYEN,
@@ -76,7 +76,7 @@ db.questions.insertMany([
 
     // --- 2. MULTIPLE CHOICE MULTI ------------------------------------------
     {
-        question_id:  'q-22222222-2222-2222-2222-222222222222',
+        question_id:  '22222222-2222-2222-2222-222222222222',
         org_id:       ORG_HUST,
         subject_code: 'CS101',
         created_by:   USER_GV_NGUYEN,
@@ -110,7 +110,7 @@ db.questions.insertMany([
 
     // --- 3. FILL BLANK -----------------------------------------------------
     {
-        question_id:  'q-33333333-3333-3333-3333-333333333333',
+        question_id:  '33333333-3333-3333-3333-333333333333',
         org_id:       ORG_HUST,
         subject_code: 'CS101',
         created_by:   USER_GV_NGUYEN,
@@ -141,7 +141,7 @@ db.questions.insertMany([
 
     // --- 4. ORDERING -------------------------------------------------------
     {
-        question_id:  'q-44444444-4444-4444-4444-444444444444',
+        question_id:  '44444444-4444-4444-4444-444444444444',
         org_id:       ORG_HUST,
         subject_code: 'CS201',
         created_by:   USER_GV_TRAN,
@@ -173,7 +173,7 @@ db.questions.insertMany([
 
     // --- 5. CODE EXECUTION -------------------------------------------------
     {
-        question_id:  'q-55555555-5555-5555-5555-555555555555',
+        question_id:  '55555555-5555-5555-5555-555555555555',
         org_id:       ORG_HUST,
         subject_code: 'CS101',
         created_by:   USER_GV_NGUYEN,
@@ -211,7 +211,7 @@ db.questions.insertMany([
 
     // --- 6. TRUE/FALSE -----------------------------------------------------
     {
-        question_id:  'q-66666666-6666-6666-6666-666666666666',
+        question_id:  '66666666-6666-6666-6666-666666666666',
         org_id:       ORG_HUST,
         subject_code: 'CS201',
         created_by:   USER_GV_TRAN,
@@ -241,7 +241,7 @@ db.questions.insertMany([
 
     // --- 7. ESSAY ----------------------------------------------------------
     {
-        question_id:  'q-77777777-7777-7777-7777-777777777777',
+        question_id:  '77777777-7777-7777-7777-777777777777',
         org_id:       ORG_HUST,
         subject_code: 'CS201',
         created_by:   USER_GV_TRAN,
@@ -280,7 +280,7 @@ db.questions.insertMany([
 // =============================================================================
 db.question_versions.insertMany([
     {
-        question_id: 'q-11111111-1111-1111-1111-111111111111',
+        question_id: '11111111-1111-1111-1111-111111111111',
         version: 1,
         content_snapshot: {
             text: 'Thuật toán sắp xếp nào có độ phức tạp O(n log n)?',
@@ -300,7 +300,7 @@ db.question_versions.insertMany([
 // =============================================================================
 db.question_reports.insertMany([
     {
-        question_id: 'q-22222222-2222-2222-2222-222222222222',
+        question_id: '22222222-2222-2222-2222-222222222222',
         reported_by: 'a0000000-0000-0000-0000-000000000004',
         attempt_id:  'f0000000-0000-0000-0000-000000000001',
         report_type: 'ambiguous',

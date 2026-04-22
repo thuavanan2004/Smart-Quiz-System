@@ -1,5 +1,4 @@
 {
-    "_comment": "AI Service RAG corpus - tài liệu curriculum / textbook để LLM retrieve khi sinh câu hỏi. Tạo bằng: curl -X PUT http://localhost:9200/rag_corpus -H 'Content-Type: application/json' -d @schema_rag_corpus.json. PROD: (1) tạo ILM policy `rag_corpus_ilm` với rollover 50GB hoặc 30 ngày trước khi tạo index; (2) dùng alias + data stream thay vì index name cố định để ILM rollover hoạt động; (3) cài plugin analysis-vietnamese / ICU cho tokenizer tiếng Việt.",
     "settings": {
         "number_of_shards": 3,
         "number_of_replicas": 1,
