@@ -56,39 +56,6 @@ docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.obs.yml u
 # cd web           && pnpm dev
 ```
 
-## 5. Convention
-
-### Git & commit
-- **Conventional Commits**: `feat(exam): add submit endpoint`, `fix(auth): correct JWT exp`.
-- Trunk-based, feature branch ngắn (≤ 3 ngày), PR nhỏ (< 400 dòng diff).
-- PR phải link design doc hoặc ADR liên quan.
-
-### Code style Java
-- Spotless + Google Java Format. Tự chạy `./gradlew spotlessApply` trước commit.
-- Không Lombok ngoài `@Slf4j`, `@RequiredArgsConstructor`, `@Value` (Constructor injection).
-- Mỗi entity JPA có 1 repository, service layer giữ logic, controller mỏng.
-- DTO tách khỏi entity — dùng MapStruct.
-
-### Code style TS
-- ESLint recommended + `@typescript-eslint/strict`.
-- Prefer named exports; component trong `PascalCase.tsx`.
-- Server Components mặc định; `'use client'` chỉ khi cần (form, stateful hook).
-
-### Code style Python
-- `ruff check --fix` + `black .` + `mypy --strict`.
-- Type hint bắt buộc ở mọi function public.
-- Pydantic v2 model cho mọi request/response FastAPI.
-
-### DB migration
-- Mỗi thay đổi schema = 1 file migration mới (không sửa file đã merge vào main).
-- File name: `V{epoch}__<snake_case_desc>.sql` cho Flyway.
-- Test rollback chạy được local.
-
-### Event schema
-- Thêm field → optional + default → backward-compat.
-- Xoá / đổi type → bump major version, tạo topic `.v2`, migrate song song.
-- Xem [`shared-contracts/avro/TOPICS.md`](shared-contracts/avro/TOPICS.md).
-
 ## 6. Interaction rules cho Claude
 
 - **KHÔNG** đổi design doc khi sửa code trừ khi user yêu cầu rõ. Design doc là source of truth cho hành vi — nếu phát hiện design sai/thiếu, flag lên, đừng tự sửa.
@@ -98,15 +65,54 @@ docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.obs.yml u
 - **Luôn** chạy migration + test trước khi nói "done". Nếu môi trường không cho chạy, ghi rõ trong output.
 - **Luôn** prefer reuse — nếu đã có utility chung (trong `shared-*`), dùng lại; không copy-paste.
 
-## 7. Skills có sẵn trong `.claude/skills/`
+## 7. Agents & Skills trong `.claude/`
 
-- **fullstack-dev**: kiến trúc backend Java/Python, REST API, auth flow, production hardening.
-- **frontend-dev**: UI/UX, animation, design asset cho Next.js.
+### Agents (`.claude/agents/`) — invoke bằng `@<name>` hoặc để Claude tự chọn
+
+- **spring-boot-engineer**: scaffold Gradle module, entity, repository, service, controller, REST endpoint cho backend Java.
+- **security-engineer**: Spring Security, JWT, OAuth2, threat model, vulnerability review.
+- **code-reviewer**: review PR, quality gate trước merge.
+- **devops-engineer**: CI/CD pipeline, automation.
+- **docker-expert**: Dockerfile multi-stage, image hardening.
+- **kubernetes-specialist**: K8s manifest, Helm, deployment pattern.
+
+### Skills (`.claude/skills/`) — auto-load theo context
+
+Backend Java / Spring Boot:
+- **spring-boot**: Spring Boot 3.x — REST, JPA, Security, Testing, Cloud-native.
+- **code-quality**: clean code, API contract, null safety, exception handling, performance.
+- **design-patterns**: Factory, Builder, Strategy, Observer, Decorator...
+- **jpa-patterns**: N+1, lazy loading, transaction, fetch strategy.
+- **logging-patterns**: SLF4J, structured JSON log, MDC request tracing.
+
+Frontend React / Next.js (Vercel Engineering):
+- **react-best-practices**: 45 rule perf optimization React/Next.js (cascading useEffect, bundle split, heavy client import...).
+- **composition-patterns**: compound component, render props, context provider; fix boolean prop proliferation. Cập nhật theo React 19.
+- **react-view-transitions**: `<ViewTransition>` API — page transition, shared element, list reorder (không cần thư viện 3rd-party).
+- **web-design-guidelines**: audit UI compliance (accessibility, UX best practice).
+
+Doc export + vision:
 - **minimax-docx / minimax-xlsx / pptx-generator**: export báo cáo, bảng điểm, slide.
-- **vision-analysis**: phân tích ảnh (có thể hỗ trợ proctoring L5 hoặc review mockup UI).
+- **vision-analysis**: phân tích ảnh (proctoring L5 hoặc review mockup UI).
 
-Skill design (có sẵn từ trước): `design-kickoff`, `design-review`, `threat-modeling`,
-`tech-selection`, `requirements-discovery`, `adr-writer` — dùng khi mở rộng thiết kế.
+Skill design (có sẵn từ trước): `design-kickoff`, `design-review`, `threat-modeling`, `tech-selection`, `requirements-discovery`, `adr-writer` — dùng khi mở rộng thiết kế.
+
+### Workflow mẫu khi scaffold service mới
+
+1. `@spring-boot-engineer` — tạo Gradle module, entity, service layer, controller.
+2. `@security-engineer` — wire Spring Security + JWT RS256 (bám NFR ở section 3).
+3. Viết test (skill `spring-boot` + `jpa-patterns` auto-hỗ trợ).
+4. `@code-reviewer` — review trước commit.
+5. `@docker-expert` → `@kubernetes-specialist` khi containerize / deploy.
+
+### Ranh giới agents vs CLAUDE.md
+
+Agents chỉ biết **best practice Spring Boot chung**. Các rule **project-specific** sau **không nằm trong agents** — Claude phải chủ động áp khi code:
+
+- NFR lock ở **section 3** (outbox pattern, state_version fencing, JWT RS256 + JWKS, idempotent consumer).
+- DB migration & event schema ở các section tương ứng (Flyway naming, Avro backward-compat).
+
+Nếu agent sinh code vi phạm rule project → stop, sửa theo CLAUDE.md, rồi mới tiếp.
 
 ## 8. Tài liệu tham chiếu nhanh
 
