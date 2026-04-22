@@ -1,0 +1,65 @@
+# =============================================================================
+# SmartQuizSystem — .gitignore
+# =============================================================================
+
+# --- Secrets / local env ---
+ops/llm-api-keys.env
+*.env.local
+.env
+
+# --- JWT keypair (sinh bằng ops/gen-jwt-keypair.sh) ---
+ops/jwt/private.pem
+ops/jwt/public.pem
+ops/jwt/kid.txt
+
+# --- Uploads (user data, không commit) ---
+data/uploads/*
+!data/uploads/.gitkeep
+
+# --- Java / Gradle ---
+**/build/
+**/.gradle/
+**/out/
+*.class
+hs_err_pid*
+replay_pid*
+
+# --- Node / pnpm ---
+**/node_modules/
+**/.next/
+**/.turbo/
+**/dist/
+**/.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+
+# --- Python ---
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.venv/
+**/venv/
+**/*.egg-info/
+dist/
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+
+# --- Docker volumes local ---
+docker-data/
+pgdata/
+redisdata/
+kafkadata/
+
+# --- Logs ---
+*.log
+logs/

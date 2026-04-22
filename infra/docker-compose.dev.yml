@@ -1,0 +1,136 @@
+# =============================================================================
+# infra/docker-compose.dev.yml — SmartQuizSystem (DATN scope)
+# =============================================================================
+# Stack infra cho development:
+#   - PostgreSQL 16 + pgvector (1 instance, 3 schema: auth/core/proctoring)
+#   - Redis 7 (cache + session + WS pubsub + rate limit + outbox lock)
+#   - Kafka 3.8 + Zookeeper (broker đơn, 3 partition / topic)
+#
+# Chạy:       docker compose -f infra/docker-compose.dev.yml up -d
+# Xem:        docker compose -f infra/docker-compose.dev.yml ps
+# Tắt:        docker compose -f infra/docker-compose.dev.yml down
+# Xoá data:   docker compose -f infra/docker-compose.dev.yml down -v
+#
+# Sau khi PG healthy, init schema + seed:
+#   docker exec -i sq-postgres psql -U postgres -d smartquiz < database/postgresql/schema.sql
+#   docker exec -i sq-postgres psql -U postgres -d smartquiz < database/postgresql/seed.sql
+#
+# Sau khi Kafka healthy, tạo topic:
+#   bash ops/kafka/create-topics.sh
+#
+# Scope DATN (ADR-003): KHÔNG có MongoDB/ClickHouse/Elasticsearch/Flink/Apicurio.
+# Production stack đầy đủ: xem docs/archive/legacy-databases/docker-compose.yml.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 + pgvector (ADR-007)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sq-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: smartquiz
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../database/postgresql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ../database/postgresql/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d smartquiz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — cache + session + WS pubsub + rate limit + outbox lock
+  # DATN gộp thành 1 instance (production tách 2: hot vs cache — archive).
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: sq-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 300 10
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Kafka 3.8 (KRaft mode — không cần Zookeeper riêng)
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: bitnami/kafka:3.8
+    container_name: sq-kafka
+    environment:
+      # KRaft
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Single-broker defaults
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "9092:9092"     # internal (containers on sq-net)
+      - "29092:29092"   # host access (services chạy ngoài Docker)
+    volumes:
+      - kafkadata:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # ---------------------------------------------------------------------------
+  # Kafka UI (optional — bật khi cần debug topic)
+  # Truy cập http://localhost:8080
+  # ---------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: sq-kafka-ui
+    profiles: ["ui"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: smartquiz-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+
+volumes:
+  pgdata:
+  redisdata:
+  kafkadata:
+
+
+# Endpoint summary:
+#   PostgreSQL  localhost:5432   (user=postgres, pass=postgres, db=smartquiz)
+#   Redis       localhost:6379
+#   Kafka       localhost:29092  (services chạy ngoài Docker)
+#               kafka:9092       (services trong cùng compose network)
+#   Kafka UI    localhost:8080   (chỉ khi --profile ui)

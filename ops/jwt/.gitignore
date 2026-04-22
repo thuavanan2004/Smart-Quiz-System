@@ -1,0 +1,4 @@
+# JWT keypair — KHÔNG commit private key vào git.
+private.pem
+public.pem
+kid.txt
