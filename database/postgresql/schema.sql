@@ -1,754 +1,491 @@
 -- =============================================================================
--- schema.sql — PostgreSQL 16 | SmartQuizSystem
+-- schema.sql — PostgreSQL 16 + pgvector | SmartQuizSystem (DATN scope)
 -- =============================================================================
--- Single source of truth cho toàn bộ schema PostgreSQL.
--- Mount vào Docker initdb (xem database/docker-compose.yml) để container tự
--- khởi tạo schema khi volume trống. Chạy thủ công:
---     psql -U postgres -d smartquiz -f schema.sql
+-- Single source of truth cho schema PostgreSQL của đồ án tốt nghiệp.
+-- Mount vào Docker initdb (xem infra/docker-compose.dev.yml) để container tự
+-- khởi tạo schema khi volume trống, hoặc chạy thủ công:
+--     psql -U postgres -d smartquiz -f database/postgresql/schema.sql
+--
+-- Image bắt buộc: pgvector/pgvector:pg16 (vì cột embedding vector(384)).
+--
+-- Kiến trúc: 3 schema cho 3 service, 1 PG instance chung.
+--   - auth       : Auth service
+--   - core       : Core service (exam + question + attempt + analytics + AI orch.)
+--   - proctoring : Proctoring service (cheat L1-L3)
+--
+-- Doc tham chiếu:
+--   - docs/database.md
+--   - docs/adr/ADR-003 (scope DATN), ADR-004 (drop Mongo), ADR-005 (drop CH),
+--     ADR-006 (AI Combo A), ADR-007 (pgvector)
+--
+-- Production-grade DDL (multi-tenant, ClickHouse, Mongo, ES, IRT, appeals...)
+-- được lưu ở docs/archive/production-design/ và KHÔNG áp dụng cho DATN.
 --
 -- MỤC LỤC
 --   1.  Extensions
---   2.  ENUM types
---   3.  Organizations & Users
---   4.  RBAC động (roles / permissions / role_permissions / user_organizations)
---   5.  Identity & Session (oauth_providers / refresh_tokens)
---   6.  Subjects, Exams, Sections, Questions, Enrollments
---   7.  Attempts & Answers (+ fencing token state_version)
---   8.  Cheat events & Proctoring
---   9.  Grading, Feedback, Certificates
---   10. Auth mở rộng (password_history, mfa_backup_codes, email_verification_tokens, audit_log_auth)
---   11. AI service (ai_jobs, ai_cost_ledger, ai_budgets)
---   12. Cheating review (cheat_review_queue, cheat_appeals)
---   13. Reliability (outbox, processed_events) — ADR-001
---   14. Triggers (updated_at)
---   15. Roles & grants (optional, commented)
+--   2.  Schemas + roles (optional grants)
+--   3.  Schema `auth`  : users, refresh_tokens
+--   4.  Schema `core`  : questions, exams, attempts, answers, documents, AI tables, outbox
+--   5.  Analytics views (thay ClickHouse)
+--   6.  Schema `proctoring` : cheat_events, cheat_alerts, sessions, outbox
+--   7.  Triggers (updated_at)
 -- =============================================================================
 
 
 -- =============================================================================
 -- 1. EXTENSIONS
 -- =============================================================================
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";      -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS "citext";        -- case-insensitive text
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";       -- trigram search
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS vector;    -- pgvector — ADR-007
 
 
 -- =============================================================================
--- 2. ENUM TYPES
--- =============================================================================
--- NOTE: user_role ENUM đã REMOVED. Role/permission chuyển sang bảng động
--- (xem section 4) để hỗ trợ custom role per-org + permission-based RBAC.
-
-CREATE TYPE exam_status AS ENUM (
-    'draft', 'published', 'scheduled', 'active', 'completed', 'archived'
-);
-
-CREATE TYPE attempt_status AS ENUM (
-    'in_progress', 'submitted', 'graded', 'suspended', 'expired', 'cancelled'
-);
-
-CREATE TYPE cheat_event_type AS ENUM (
-    'tab_switch','window_blur','fullscreen_exit','copy_event','paste_event',
-    'right_click','devtools_open','keyboard_shortcut','context_menu',
-    'ip_change','vpn_detected','multiple_ip','geolocation_change',
-    'typing_anomaly','answer_speed_anomaly','idle_too_long','answer_pattern',
-    'face_missing','multiple_faces','phone_detected','gaze_off_screen',
-    'audio_detected','environment_issue',
-    'answer_similarity','sync_submission','score_anomaly'
-);
-
-
--- =============================================================================
--- 3. ORGANIZATIONS & USERS
+-- 2. SCHEMAS
 -- =============================================================================
 
-CREATE TABLE organizations (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name                VARCHAR(300) NOT NULL,
-    slug                VARCHAR(100) UNIQUE NOT NULL,
-    plan_tier           VARCHAR(30) DEFAULT 'free',
-    max_users           INT DEFAULT 100,
-    max_exams           INT DEFAULT 50,
-    ai_enabled          BOOLEAN DEFAULT false,
-    proctoring_enabled  BOOLEAN DEFAULT false,
-    settings            JSONB DEFAULT '{}'::jsonb,
-    is_active           BOOLEAN DEFAULT true,
-    created_at          TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at          TIMESTAMPTZ
-);
+CREATE SCHEMA IF NOT EXISTS auth;
+CREATE SCHEMA IF NOT EXISTS core;
+CREATE SCHEMA IF NOT EXISTS proctoring;
 
-CREATE INDEX idx_orgs_slug   ON organizations(slug);
-CREATE INDEX idx_orgs_active ON organizations(is_active) WHERE is_active = true;
-
-CREATE TABLE users (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email               CITEXT UNIQUE NOT NULL,
-    username            VARCHAR(80) UNIQUE,
-    full_name           VARCHAR(200) NOT NULL,
-    avatar_url          VARCHAR(500),
-    password_hash       VARCHAR(255),
-    mfa_secret          VARCHAR(64),
-    mfa_enabled         BOOLEAN DEFAULT false,
-    email_verified      BOOLEAN DEFAULT false,
-    locale              VARCHAR(10) DEFAULT 'vi-VN',
-    timezone            VARCHAR(60) DEFAULT 'Asia/Ho_Chi_Minh',
-    last_login_at       TIMESTAMPTZ,
-    last_login_ip       INET,
-    failed_login_count  SMALLINT DEFAULT 0,
-    locked_until        TIMESTAMPTZ,
-    is_active           BOOLEAN DEFAULT true,
-    created_at          TIMESTAMPTZ DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at          TIMESTAMPTZ
-);
-
--- email đã có UNIQUE (btree tự tạo). Index bổ sung cho query tài khoản còn sống + tìm theo tên.
-CREATE INDEX idx_users_email_active  ON users(email)     WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_active        ON users(is_active) WHERE is_active = true AND deleted_at IS NULL;
-CREATE INDEX idx_users_last_login    ON users(last_login_at DESC);
-CREATE INDEX idx_users_fullname_trgm ON users USING GIN (full_name gin_trgm_ops);
-
-
--- =============================================================================
--- 4. RBAC ĐỘNG
--- =============================================================================
--- Thay thế user_role ENUM hardcoded. Hỗ trợ:
---   - 4 role hệ thống (is_system=true): student, instructor, admin, proctor
---   - Role tuỳ biến theo org (is_system=false, org_id != NULL)
---   - Permission-based enforcement (hasAuthority('exam.update') thay vì hasRole).
-
-CREATE TABLE roles (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id       UUID REFERENCES organizations(id) ON DELETE CASCADE,  -- NULL = system role
-    code         VARCHAR(50) NOT NULL,    -- 'student', 'instructor', 'custom.grading_assistant'...
-    name         VARCHAR(200) NOT NULL,
-    description  TEXT,
-    is_system    BOOLEAN DEFAULT false,   -- true = không được sửa/xoá
-    is_active    BOOLEAN DEFAULT true,
-    created_at   TIMESTAMPTZ DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ DEFAULT NOW()
-);
--- System roles có org_id=NULL; code unique trong phạm vi system
-CREATE UNIQUE INDEX idx_roles_system_code ON roles(code) WHERE org_id IS NULL;
--- Custom roles unique trong 1 org
-CREATE UNIQUE INDEX idx_roles_org_code    ON roles(org_id, code) WHERE org_id IS NOT NULL;
-CREATE INDEX idx_roles_org_active ON roles(org_id, is_active);
-
-CREATE TABLE permissions (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    code         VARCHAR(100) UNIQUE NOT NULL,   -- 'exam.create', 'question.approve', 'user.impersonate'
-    resource     VARCHAR(50) NOT NULL,           -- 'exam', 'question', 'user', 'attempt', 'cheat', 'analytics', 'ai'
-    action       VARCHAR(50) NOT NULL,           -- 'create','read','update','delete','grade','approve','impersonate'...
-    scope        VARCHAR(20) DEFAULT 'org',      -- 'own'|'org'|'platform'
-    description  TEXT,
-    is_system    BOOLEAN DEFAULT true            -- false nếu permission do org tạo (Phase 3)
-);
-CREATE INDEX idx_permissions_resource ON permissions(resource);
-
-CREATE TABLE role_permissions (
-    role_id       UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    permission_id UUID NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
-    granted_at    TIMESTAMPTZ DEFAULT NOW(),
-    granted_by    UUID REFERENCES users(id),
-    PRIMARY KEY (role_id, permission_id)
-);
-CREATE INDEX idx_role_perms_role ON role_permissions(role_id);
-
-CREATE TABLE user_organizations (
-    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    role_id     UUID NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
-    joined_at   TIMESTAMPTZ DEFAULT NOW(),
-    invited_by  UUID REFERENCES users(id),
-    is_active   BOOLEAN DEFAULT true,
-    PRIMARY KEY (user_id, org_id)
-);
-
-CREATE INDEX idx_user_orgs_user ON user_organizations(user_id);
-CREATE INDEX idx_user_orgs_org  ON user_organizations(org_id, role_id);
-CREATE INDEX idx_user_orgs_role ON user_organizations(role_id);
-
-
--- =============================================================================
--- 5. IDENTITY & SESSION
--- =============================================================================
-
-CREATE TABLE oauth_providers (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    provider            VARCHAR(30) NOT NULL,
-    provider_user_id    VARCHAR(255) NOT NULL,
-    access_token_enc    TEXT,
-    linked_at           TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX idx_oauth_provider ON oauth_providers(provider, provider_user_id);
-
--- refresh_tokens:
---   active_org_id persist org active để switch-org + refresh giữ ngữ cảnh đúng
---     (auth-service-design.md §12.2).
---   family_id / rotated_to_id / rotated_from_id: chain rotation cho stolen detection
---     (auth-service-design.md §5.2.1). 1 lần login = 1 family_id; mỗi refresh tạo row mới
---     giữ nguyên family_id, link parent↔child qua rotated_from_id/rotated_to_id.
---     Khi phát hiện reuse (row.revoked=true mà vẫn bị present) → revoke cả family.
-CREATE TABLE refresh_tokens (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    family_id           UUID NOT NULL,               -- cùng login session → cùng family
-    token_hash          BYTEA UNIQUE NOT NULL,       -- SHA-256 raw (32 bytes)
-    active_org_id       UUID REFERENCES organizations(id) ON DELETE SET NULL,
-    device_fingerprint  VARCHAR(128),
-    user_agent          VARCHAR(512),
-    ip_address          INET,
-    expires_at          TIMESTAMPTZ NOT NULL,
-    revoked             BOOLEAN DEFAULT false,
-    revoked_at          TIMESTAMPTZ,
-    rotated_from_id     UUID REFERENCES refresh_tokens(id) ON DELETE SET NULL,  -- parent token
-    rotated_to_id       UUID REFERENCES refresh_tokens(id) ON DELETE SET NULL,  -- child token
-    created_at          TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_refresh_user   ON refresh_tokens(user_id, expires_at);
-CREATE INDEX idx_refresh_token  ON refresh_tokens(token_hash);
--- Stolen detection: revoke cả family trong 1 UPDATE.
-CREATE INDEX idx_refresh_family ON refresh_tokens(family_id, revoked);
-
-
--- =============================================================================
--- 6. SUBJECTS, EXAMS, SECTIONS, QUESTIONS, ENROLLMENTS
--- =============================================================================
-
-CREATE TABLE subjects (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id      UUID REFERENCES organizations(id) ON DELETE CASCADE,
-    name        VARCHAR(200) NOT NULL,
-    code        VARCHAR(30) UNIQUE NOT NULL,
-    parent_id   UUID REFERENCES subjects(id) ON DELETE SET NULL,
-    description TEXT,
-    is_active   BOOLEAN DEFAULT true
-);
-
-CREATE INDEX idx_subjects_org  ON subjects(org_id);
-CREATE INDEX idx_subjects_code ON subjects(code);
-
-CREATE TABLE exams (
-    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id                      UUID NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
-    subject_id                  UUID REFERENCES subjects(id) ON DELETE SET NULL,
-    created_by                  UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    title                       VARCHAR(500) NOT NULL,
-    description                 TEXT,
-    instructions                TEXT,
-    status                      exam_status DEFAULT 'draft',
-    exam_type                   VARCHAR(30) DEFAULT 'standard',
-    duration_minutes            INT NOT NULL,
-    max_attempts                SMALLINT DEFAULT 1,
-    passing_score               NUMERIC(5,2),
-    total_points                NUMERIC(8,2) NOT NULL,
-    shuffle_questions           BOOLEAN DEFAULT false,
-    shuffle_options             BOOLEAN DEFAULT false,
-    show_result_immediately     BOOLEAN DEFAULT true,
-    show_correct_answers        BOOLEAN DEFAULT false,
-    allow_review                BOOLEAN DEFAULT false,
-    proctoring_level            SMALLINT DEFAULT 0,
-    lockdown_browser            BOOLEAN DEFAULT false,
-    ip_whitelist                INET[],
-    password_protected          BOOLEAN DEFAULT false,
-    access_password_hash        VARCHAR(255),
-    starts_at                   TIMESTAMPTZ,
-    ends_at                     TIMESTAMPTZ,
-    grace_period_minutes        SMALLINT DEFAULT 0,
-    created_at                  TIMESTAMPTZ DEFAULT NOW(),
-    updated_at                  TIMESTAMPTZ DEFAULT NOW(),
-    published_at                TIMESTAMPTZ,
-    deleted_at                  TIMESTAMPTZ
-);
-
-CREATE INDEX idx_exams_org        ON exams(org_id, status) WHERE deleted_at IS NULL;
-CREATE INDEX idx_exams_creator    ON exams(created_by)     WHERE deleted_at IS NULL;
-CREATE INDEX idx_exams_active     ON exams(status, starts_at, ends_at)
-    WHERE status IN ('published','scheduled','active') AND deleted_at IS NULL;
-CREATE INDEX idx_exams_open       ON exams(org_id, status, starts_at, ends_at)
-    WHERE status IN ('published','active') AND deleted_at IS NULL;
-CREATE INDEX idx_exams_title_trgm ON exams USING GIN (title gin_trgm_ops);
-
-CREATE TABLE exam_sections (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id                 UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    title                   VARCHAR(200) NOT NULL,
-    description             TEXT,
-    order_index             SMALLINT NOT NULL,
-    time_limit_minutes      SMALLINT,
-    question_count          SMALLINT NOT NULL,
-    points_per_question     NUMERIC(6,2),
-    penalty_per_wrong       NUMERIC(6,2) DEFAULT 0
-);
-
-CREATE INDEX idx_sections_exam ON exam_sections(exam_id, order_index);
-
-CREATE TABLE exam_questions (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id             UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    section_id          UUID REFERENCES exam_sections(id) ON DELETE SET NULL,
-    question_ref_id     VARCHAR(36) NOT NULL,
-    question_version    INT DEFAULT 1,
-    order_index         SMALLINT NOT NULL,
-    points              NUMERIC(6,2) NOT NULL,
-    is_required         BOOLEAN DEFAULT true,
-    display_mode        VARCHAR(20) DEFAULT 'standard'
-);
-
-CREATE INDEX idx_eq_exam    ON exam_questions(exam_id, order_index);
-CREATE INDEX idx_eq_section ON exam_questions(section_id);
-CREATE UNIQUE INDEX idx_eq_order ON exam_questions(exam_id, section_id, order_index);
-
-CREATE TABLE exam_enrollments (
-    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id                     UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    user_id                     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    enrolled_by                 UUID REFERENCES users(id),
-    enrolled_at                 TIMESTAMPTZ DEFAULT NOW(),
-    custom_duration_minutes     INT,
-    custom_starts_at            TIMESTAMPTZ
-);
-
-CREATE UNIQUE INDEX idx_enrollment ON exam_enrollments(exam_id, user_id);
-
-
--- =============================================================================
--- 7. ATTEMPTS & ANSWERS
--- =============================================================================
--- PARTITIONING NOTE (production):
---   exam_attempts + attempt_answers sẽ >60M rows/năm ở quy mô 100K MAU.
---   Khi đạt ~10M rows, migrate sang partitioned table:
---     1) Đổi PK (id, started_at) — PG yêu cầu PK chứa partition key.
---     2) PARTITION BY RANGE (started_at), dùng pg_partman tạo partition tháng.
---     3) Cập nhật các FK trỏ tới exam_attempts (attempt_answers, cheat_events,
---        proctoring_sessions, certificates, cheat_review_queue, cheat_appeals,
---        attempt_feedback) để reference (id, started_at).
---   Migration cần coordinate downtime + recreate FK. Xem docs/database.md
---   mục "Partitioning Strategy".
+-- Optional: tạo role per service (bỏ comment khi deploy)
+-- CREATE ROLE auth_app       LOGIN PASSWORD 'change-me';
+-- CREATE ROLE core_app       LOGIN PASSWORD 'change-me';
+-- CREATE ROLE proctoring_app LOGIN PASSWORD 'change-me';
+-- CREATE ROLE ai_reader      LOGIN PASSWORD 'change-me';
 --
--- FENCING TOKEN (ADR-001):
---   state_version tăng 1 mỗi UPDATE exam_attempts (optimistic lock qua JPA
---   @Version hoặc WHERE state_version = ? ở native SQL). Giải quyết race giữa
---   Exam Service (submit) và Cheating Detection (auto-suspend khi risk >= 60).
-
-CREATE TABLE exam_attempts (
-    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id                     UUID NOT NULL REFERENCES exams(id) ON DELETE RESTRICT,
-    user_id                     UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    attempt_number              SMALLINT DEFAULT 1,
-    status                      attempt_status DEFAULT 'in_progress',
-    state_version               BIGINT NOT NULL DEFAULT 0,
-    started_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    submitted_at                TIMESTAMPTZ,
-    graded_at                   TIMESTAMPTZ,
-    expires_at                  TIMESTAMPTZ NOT NULL,
-    time_spent_seconds          INT DEFAULT 0,
-    raw_score                   NUMERIC(8,2),
-    max_score                   NUMERIC(8,2) NOT NULL,
-    percentage_score            NUMERIC(5,2),
-    passed                      BOOLEAN,
-    risk_score                  SMALLINT DEFAULT 0,
-    flagged_for_review          BOOLEAN DEFAULT false,
-    flagged_reason              TEXT,
-    ip_address                  INET,
-    user_agent                  VARCHAR(512),
-    geo_country                 VARCHAR(3),
-    geo_city                    VARCHAR(100),
-    current_question_index      SMALLINT DEFAULT 0,
-    question_order              UUID[],
-    adaptive_theta              FLOAT8,
-    adaptive_se                 FLOAT8
-);
-
-COMMENT ON COLUMN exam_attempts.state_version IS
-    'Fencing token cho state transition. Tăng 1 mỗi UPDATE (optimistic lock).';
-
-CREATE INDEX idx_attempts_exam_user   ON exam_attempts(exam_id, user_id);
-CREATE INDEX idx_attempts_active      ON exam_attempts(status, expires_at) WHERE status = 'in_progress';
-CREATE INDEX idx_attempts_flagged     ON exam_attempts(flagged_for_review) WHERE flagged_for_review = true;
-CREATE UNIQUE INDEX idx_one_active_attempt ON exam_attempts(exam_id, user_id) WHERE status = 'in_progress';
-CREATE INDEX idx_attempts_exam_perf   ON exam_attempts(exam_id, status, raw_score, percentage_score)
-    WHERE status IN ('submitted','graded');
-CREATE INDEX idx_attempts_user_recent ON exam_attempts(user_id, started_at DESC);
-
-CREATE TABLE attempt_answers (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id              UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE CASCADE,
-    question_ref_id         VARCHAR(36) NOT NULL,
-    exam_question_id        UUID NOT NULL REFERENCES exam_questions(id) ON DELETE CASCADE,
-    answer_data             JSONB NOT NULL DEFAULT '{}'::jsonb,
-    is_correct              BOOLEAN,
-    points_earned           NUMERIC(6,2),
-    partial_credit          BOOLEAN DEFAULT false,
-    grading_method          VARCHAR(20) DEFAULT 'auto',
-    graded_by               UUID REFERENCES users(id),
-    grader_comment          TEXT,
-    time_spent_seconds      SMALLINT DEFAULT 0,
-    answered_at             TIMESTAMPTZ DEFAULT NOW(),
-    last_modified_at        TIMESTAMPTZ DEFAULT NOW(),
-    submission_id           UUID UNIQUE NOT NULL DEFAULT gen_random_uuid()
-);
-
-CREATE INDEX idx_answers_attempt    ON attempt_answers(attempt_id, exam_question_id);
-CREATE INDEX idx_answers_question   ON attempt_answers(question_ref_id);
-CREATE INDEX idx_answers_graded_man ON attempt_answers(graded_by, answered_at)
-    WHERE grading_method = 'manual';
+-- GRANT USAGE ON SCHEMA auth       TO auth_app;
+-- GRANT USAGE ON SCHEMA core       TO core_app, ai_reader;
+-- GRANT USAGE ON SCHEMA proctoring TO proctoring_app;
+--
+-- GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA auth       TO auth_app;
+-- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA auth       TO auth_app;
+-- GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA core       TO core_app;
+-- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA core       TO core_app;
+-- GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA proctoring TO proctoring_app;
+-- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA proctoring TO proctoring_app;
+--
+-- -- AI service đọc document text + question embeddings, update ai_cache + stylometry
+-- GRANT SELECT ON core.documents, core.questions, core.student_writing_profiles TO ai_reader;
+-- GRANT INSERT, UPDATE, SELECT ON core.ai_cache TO ai_reader;
+-- GRANT UPDATE (avg_embedding, sample_count, updated_at) ON core.student_writing_profiles TO ai_reader;
 
 
 -- =============================================================================
--- 8. CHEAT EVENTS & PROCTORING
+-- 3. SCHEMA `auth`
 -- =============================================================================
 
-CREATE TABLE cheat_events (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id          UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE CASCADE,
-    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    event_type          cheat_event_type NOT NULL,
-    event_layer         SMALLINT NOT NULL,
-    severity            VARCHAR(10) NOT NULL,
-    risk_delta          SMALLINT NOT NULL,
-    event_data          JSONB DEFAULT '{}'::jsonb,
-    client_timestamp    TIMESTAMPTZ NOT NULL,
-    server_timestamp    TIMESTAMPTZ DEFAULT NOW(),
-    question_index      SMALLINT,
-    auto_action         VARCHAR(30),
-    reviewed_by         UUID REFERENCES users(id),
-    review_decision     VARCHAR(20),
-    reviewed_at         TIMESTAMPTZ
+CREATE TABLE auth.users (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email           CITEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL,                                    -- BCrypt cost 12
+    full_name       TEXT NOT NULL,
+    role            VARCHAR(16) NOT NULL CHECK (role IN ('STUDENT','TEACHER','ADMIN')),
+    is_active       BOOLEAN NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX ix_users_role_active ON auth.users(role) WHERE is_active = true;
 
-CREATE INDEX idx_cheat_attempt    ON cheat_events(attempt_id, server_timestamp);
-CREATE INDEX idx_cheat_type       ON cheat_events(event_type, severity);
-CREATE INDEX idx_cheat_unreviewed ON cheat_events(reviewed_by)
-    WHERE reviewed_by IS NULL AND auto_action IS NOT NULL;
-CREATE INDEX idx_cheat_recent     ON cheat_events(attempt_id, server_timestamp DESC)
-    WHERE reviewed_by IS NULL;
-CREATE INDEX idx_cheat_data_gin   ON cheat_events USING GIN (event_data jsonb_path_ops);
-
-CREATE TABLE proctoring_sessions (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id              UUID UNIQUE NOT NULL REFERENCES exam_attempts(id) ON DELETE CASCADE,
-    status                  VARCHAR(20) DEFAULT 'active',
-    video_s3_key            VARCHAR(500),
-    thumbnail_s3_key        VARCHAR(500),
-    total_frames_analyzed   INT DEFAULT 0,
-    face_detected_frames    INT DEFAULT 0,
-    face_missing_frames     INT DEFAULT 0,
-    multi_face_frames       INT DEFAULT 0,
-    phone_detected_frames   INT DEFAULT 0,
-    ai_risk_summary         JSONB DEFAULT '{}'::jsonb,
-    started_at              TIMESTAMPTZ DEFAULT NOW(),
-    ended_at                TIMESTAMPTZ
-);
-
-
--- =============================================================================
--- 9. GRADING, FEEDBACK, CERTIFICATES
--- =============================================================================
-
-CREATE TABLE grading_rubrics (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id     UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    name        VARCHAR(200) NOT NULL,
-    criteria    JSONB NOT NULL,
-    created_by  UUID NOT NULL REFERENCES users(id),
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_rubrics_exam ON grading_rubrics(exam_id);
-
-CREATE TABLE attempt_feedback (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id              UUID UNIQUE NOT NULL REFERENCES exam_attempts(id) ON DELETE CASCADE,
-    overall_feedback        TEXT,
-    strengths               TEXT[] DEFAULT '{}',
-    weaknesses              TEXT[] DEFAULT '{}',
-    recommendations         TEXT[] DEFAULT '{}',
-    ai_generated            BOOLEAN DEFAULT false,
-    created_by              UUID REFERENCES users(id),
-    created_at              TIMESTAMPTZ DEFAULT NOW(),
-    visible_to_student      BOOLEAN DEFAULT false,
-    visible_at              TIMESTAMPTZ
-);
-
-CREATE TABLE certificates (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id          UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE RESTRICT,
-    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    exam_id             UUID NOT NULL REFERENCES exams(id) ON DELETE RESTRICT,
-    certificate_number  VARCHAR(50) UNIQUE NOT NULL,
-    issued_at           TIMESTAMPTZ DEFAULT NOW(),
-    expires_at          TIMESTAMPTZ,
-    score               NUMERIC(5,2) NOT NULL,
-    verification_hash   BYTEA UNIQUE NOT NULL,        -- SHA-256 raw
-    pdf_s3_key          VARCHAR(500),
-    revoked             BOOLEAN DEFAULT false,
-    revoked_reason      TEXT
-);
-
-CREATE INDEX idx_cert_user      ON certificates(user_id);
-CREATE INDEX idx_cert_verify    ON certificates(verification_hash);
-CREATE INDEX idx_cert_number    ON certificates(certificate_number);
-CREATE INDEX idx_cert_exam_user ON certificates(exam_id, user_id);
-
-
--- =============================================================================
--- 10. AUTH MỞ RỘNG (auth-service-design.md §IV)
--- =============================================================================
-
--- Chống tái sử dụng mật khẩu (5 lần gần nhất)
-CREATE TABLE password_history (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    password_hash   VARCHAR(255) NOT NULL,
-    changed_at      TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_pwd_history_user ON password_history(user_id, changed_at DESC);
-
--- Backup codes MFA (10 code/user, mỗi code dùng 1 lần).
--- Hash nên dùng argon2id (chậm hơn SHA-256, chống brute-force nếu bảng rò rỉ).
-CREATE TABLE mfa_backup_codes (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    code_hash       BYTEA NOT NULL,
-    used_at         TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_mfa_backup_user ON mfa_backup_codes(user_id) WHERE used_at IS NULL;
-
--- Token verify email + reset password + link OAuth + change email
--- purpose values (app-level enum, DDL giữ VARCHAR để extend dễ):
---   'verify_email'    TTL 24h   — sau khi register (auth-service-design.md §6.0)
---   'reset_password'  TTL  1h   — forgot password flow (§6.3)
---   'link_oauth'      TTL 15m   — email-match verify khi link OAuth provider khác (§8.3)
---   'change_email'    TTL 24h   — đổi email chính (§18.5 OQ-5)
--- payload JSONB: metadata tùy purpose, vd link_oauth: {provider, provider_user_id, provider_email}
-CREATE TABLE email_verification_tokens (
-    token_hash      BYTEA PRIMARY KEY,                -- SHA-256 raw
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    purpose         VARCHAR(20) NOT NULL,
-    payload         JSONB,                            -- null nếu không cần metadata
+CREATE TABLE auth.refresh_tokens (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    token_hash      TEXT NOT NULL,                                    -- sha256(raw)
+    issued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ NOT NULL,
-    used_at         TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    revoked_at      TIMESTAMPTZ,
+    replaced_by     UUID REFERENCES auth.refresh_tokens(id),
+    user_agent      TEXT,
+    ip              INET
 );
-CREATE INDEX idx_evt_user ON email_verification_tokens(user_id, purpose);
-
--- Audit log quan trọng của Auth (partition theo tháng, giữ 12 tháng).
--- PK phải chứa partition key (created_at) theo yêu cầu của PostgreSQL.
-CREATE TABLE audit_log_auth (
-    id              UUID DEFAULT gen_random_uuid(),
-    user_id         UUID,
-    actor_id        UUID,
-    event           VARCHAR(40) NOT NULL,
-    ip_address      INET,
-    user_agent      VARCHAR(512),
-    meta            JSONB DEFAULT '{}'::jsonb,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (id, created_at)
-) PARTITION BY RANGE (created_at);
-
--- Partition seed cho 2026 (tháng 4 → hết 2026). Sau đó production phải dùng
--- pg_partman auto-create partition tháng mới + DROP partition > 12 tháng;
--- xem ops/pg/create-audit-partitions.sh (TODO) hoặc cron job tạo tháng tiếp.
-CREATE TABLE audit_log_auth_y2026m04 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
-CREATE TABLE audit_log_auth_y2026m05 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
-CREATE TABLE audit_log_auth_y2026m06 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
-CREATE TABLE audit_log_auth_y2026m07 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
-CREATE TABLE audit_log_auth_y2026m08 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
-CREATE TABLE audit_log_auth_y2026m09 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
-CREATE TABLE audit_log_auth_y2026m10 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
-CREATE TABLE audit_log_auth_y2026m11 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-11-01') TO ('2026-12-01');
-CREATE TABLE audit_log_auth_y2026m12 PARTITION OF audit_log_auth
-    FOR VALUES FROM ('2026-12-01') TO ('2027-01-01');
-
-CREATE INDEX idx_audit_auth_user  ON audit_log_auth(user_id, created_at DESC);
-CREATE INDEX idx_audit_auth_event ON audit_log_auth(event, created_at DESC);
+CREATE UNIQUE INDEX ux_refresh_tokens_hash ON auth.refresh_tokens(token_hash);
+CREATE INDEX ix_refresh_tokens_user_active ON auth.refresh_tokens(user_id) WHERE revoked_at IS NULL;
 
 
 -- =============================================================================
--- 11. AI SERVICE (ai-service-design.md §IV)
+-- 4. SCHEMA `core`
 -- =============================================================================
 
-CREATE TABLE ai_jobs (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    user_id             UUID REFERENCES users(id),
-    job_type            VARCHAR(30) NOT NULL,   -- 'generate_q','grade_essay','embed','quality_check',...
-    status              VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending|running|completed|failed|cancelled
-    input_payload       JSONB NOT NULL,
-    output_payload      JSONB,
-    error_message       TEXT,
-    model_used          VARCHAR(50),
-    prompt_version      VARCHAR(50),   -- {name}@{version}, name có thể dài (generate_mc_single@v3.1)
-    input_tokens        INT,
-    output_tokens       INT,
-    cost_usd            NUMERIC(10,5),
-    started_at          TIMESTAMPTZ,
-    completed_at        TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_ai_jobs_status    ON ai_jobs(status, created_at);
-CREATE INDEX idx_ai_jobs_org       ON ai_jobs(org_id, job_type, created_at DESC);
-CREATE INDEX idx_ai_jobs_input_gin ON ai_jobs USING GIN (input_payload jsonb_path_ops);
+-- -----------------------------------------------------------------------------
+-- 4.1. ENUM types
+-- -----------------------------------------------------------------------------
 
-CREATE TABLE ai_cost_ledger (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id              UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    job_id              UUID REFERENCES ai_jobs(id) ON DELETE SET NULL,
-    feature             VARCHAR(30) NOT NULL,
-    model               VARCHAR(50),
-    input_tokens        INT,
-    output_tokens       INT,
-    cost_usd            NUMERIC(10,5),
-    created_at          TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_cost_org_date  ON ai_cost_ledger(org_id, created_at);
--- AT TIME ZONE 'UTC' biến timestamptz → timestamp không-tz để biểu thức IMMUTABLE;
--- query budget-check phải match đúng expression: date_trunc('month', created_at AT TIME ZONE 'UTC').
-CREATE INDEX idx_cost_org_month
-    ON ai_cost_ledger(org_id, date_trunc('month', created_at AT TIME ZONE 'UTC'));
+CREATE TYPE core.question_type  AS ENUM ('MCQ_SINGLE','MCQ_MULTI','TRUE_FALSE','ESSAY');
+CREATE TYPE core.difficulty     AS ENUM ('EASY','MEDIUM','HARD');
+CREATE TYPE core.exam_status    AS ENUM ('DRAFT','PUBLISHED','ARCHIVED');
+CREATE TYPE core.attempt_status AS ENUM ('IN_PROGRESS','SUSPENDED','SUBMITTED','GRADED','CANCELLED');
+CREATE TYPE core.document_status AS ENUM ('UPLOADED','EXTRACTING','READY','FAILED');
+CREATE TYPE core.gen_job_status  AS ENUM ('QUEUED','RUNNING','DONE','FAILED');
 
-CREATE TABLE ai_budgets (
-    org_id              UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
-    monthly_limit_usd   NUMERIC(10,2) NOT NULL,
-    current_month_usd   NUMERIC(10,2) DEFAULT 0,
-    current_month       DATE,
-    hard_stop           BOOLEAN DEFAULT true,
-    updated_at          TIMESTAMPTZ DEFAULT NOW()
+-- -----------------------------------------------------------------------------
+-- 4.2. Documents (cho feature upload → sinh đề — ADR-006 §1)
+--       Đặt trước `questions` vì `questions.source_document_id` tham chiếu.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE core.documents (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    uploaded_by     UUID NOT NULL,                                    -- auth.users.id (logical FK)
+    filename        TEXT NOT NULL,
+    mime_type       VARCHAR(128) NOT NULL,
+    size_bytes      BIGINT NOT NULL CHECK (size_bytes > 0),
+    storage_path    TEXT NOT NULL,                                    -- ./data/uploads/{uuid}.pdf
+    text_content    TEXT,                                             -- extract sau khi Tika parse
+    page_count      INT,
+    status          core.document_status NOT NULL DEFAULT 'UPLOADED',
+    error_message   TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at    TIMESTAMPTZ
 );
+CREATE INDEX ix_documents_uploader ON core.documents(uploaded_by, created_at DESC);
+CREATE INDEX ix_documents_status   ON core.documents(status) WHERE status <> 'READY';
+
+-- -----------------------------------------------------------------------------
+-- 4.3. Questions (+ embedding 384d cho pgvector — ADR-004, ADR-007)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE core.questions (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    type                core.question_type NOT NULL,
+    difficulty          core.difficulty NOT NULL DEFAULT 'MEDIUM',
+    content             JSONB NOT NULL,                               -- {stem, options[], correct_answer, rubric?, explanation?}
+    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,           -- {topic, tags[], bloom_level}
+    version             INT NOT NULL DEFAULT 1,
+    ai_generated        BOOLEAN NOT NULL DEFAULT false,
+    source_document_id  UUID REFERENCES core.documents(id) ON DELETE SET NULL,
+    embedding           vector(384),                                  -- sentence-transformers/all-MiniLM-L6-v2
+    created_by          UUID NOT NULL,                                -- auth.users.id
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_questions_type       ON core.questions(type);
+CREATE INDEX ix_questions_created    ON core.questions(created_by, created_at DESC);
+CREATE INDEX ix_questions_metadata   ON core.questions USING GIN (metadata jsonb_path_ops);
+CREATE INDEX ix_questions_embedding  ON core.questions USING hnsw (embedding vector_cosine_ops);
+
+-- -----------------------------------------------------------------------------
+-- 4.4. Question generation jobs (feature upload → sinh đề)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE core.question_generation_jobs (
+    id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    document_id             UUID REFERENCES core.documents(id) ON DELETE SET NULL,
+    requested_by            UUID NOT NULL,
+    config                  JSONB NOT NULL,                           -- {topic, difficulty, count, type}
+    status                  core.gen_job_status NOT NULL DEFAULT 'QUEUED',
+    result_count            INT NOT NULL DEFAULT 0,
+    error_message           TEXT,
+    generated_question_ids  UUID[] NOT NULL DEFAULT '{}',
+    preview_payload         JSONB,                                    -- full result trước khi commit
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at            TIMESTAMPTZ
+);
+CREATE INDEX ix_gen_jobs_status    ON core.question_generation_jobs(status);
+CREATE INDEX ix_gen_jobs_requester ON core.question_generation_jobs(requested_by, created_at DESC);
+
+-- -----------------------------------------------------------------------------
+-- 4.5. Exams
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE core.exams (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title               TEXT NOT NULL,
+    description         TEXT,
+    duration_min        INT NOT NULL CHECK (duration_min > 0),
+    total_points        NUMERIC(6,2) NOT NULL DEFAULT 100,
+    pass_score          NUMERIC(6,2),
+    status              core.exam_status NOT NULL DEFAULT 'DRAFT',
+    open_at             TIMESTAMPTZ,
+    close_at            TIMESTAMPTZ,
+    shuffle_questions   BOOLEAN NOT NULL DEFAULT false,
+    shuffle_options     BOOLEAN NOT NULL DEFAULT false,
+    created_by          UUID NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at        TIMESTAMPTZ,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (open_at IS NULL OR close_at IS NULL OR open_at < close_at)
+);
+CREATE INDEX ix_exams_status  ON core.exams(status);
+CREATE INDEX ix_exams_creator ON core.exams(created_by, created_at DESC);
+
+-- Snapshot câu hỏi tại thời điểm publish exam
+CREATE TABLE core.exam_questions (
+    exam_id             UUID NOT NULL REFERENCES core.exams(id) ON DELETE CASCADE,
+    position            INT NOT NULL CHECK (position > 0),
+    question_id         UUID NOT NULL REFERENCES core.questions(id) ON DELETE RESTRICT,
+    question_version    INT NOT NULL,
+    points              NUMERIC(6,2) NOT NULL DEFAULT 1.0 CHECK (points >= 0),
+    snapshot            JSONB NOT NULL,                               -- chốt cứng content tại publish time
+    PRIMARY KEY (exam_id, position)
+);
+CREATE INDEX ix_exam_questions_q ON core.exam_questions(question_id);
+
+-- Gán exam cho student
+CREATE TABLE core.exam_assignments (
+    exam_id         UUID NOT NULL REFERENCES core.exams(id) ON DELETE CASCADE,
+    student_id      UUID NOT NULL,
+    assigned_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (exam_id, student_id)
+);
+CREATE INDEX ix_assignments_student ON core.exam_assignments(student_id);
+
+-- -----------------------------------------------------------------------------
+-- 4.6. Attempts + Answers (+ state_version fencing — ADR-003 §3)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE core.exam_attempts (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    exam_id             UUID NOT NULL REFERENCES core.exams(id) ON DELETE RESTRICT,
+    student_id          UUID NOT NULL,
+    status              core.attempt_status NOT NULL DEFAULT 'IN_PROGRESS',
+    state_version       BIGINT NOT NULL DEFAULT 0,                    -- fencing token
+    started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    submitted_at        TIMESTAMPTZ,
+    graded_at           TIMESTAMPTZ,
+    deadline_at         TIMESTAMPTZ NOT NULL,
+    total_score         NUMERIC(6,2),
+    suspended_reason    TEXT,
+    UNIQUE (exam_id, student_id)                                      -- DATN: 1 attempt per exam per student
+);
+CREATE INDEX ix_attempts_student ON core.exam_attempts(student_id, status);
+CREATE INDEX ix_attempts_exam    ON core.exam_attempts(exam_id, status);
+CREATE INDEX ix_attempts_in_progress ON core.exam_attempts(deadline_at)
+    WHERE status = 'IN_PROGRESS';
+
+CREATE TABLE core.attempt_answers (
+    id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    attempt_id                  UUID NOT NULL REFERENCES core.exam_attempts(id) ON DELETE CASCADE,
+    position                    INT NOT NULL CHECK (position > 0),
+    question_id                 UUID NOT NULL REFERENCES core.questions(id) ON DELETE RESTRICT,
+    answer_data                 JSONB NOT NULL DEFAULT '{}'::jsonb,   -- {selected: [...]} | {text: "..."}
+    score                       NUMERIC(6,2),
+    feedback                    TEXT,
+    -- AI tutor explanation — ADR-006 §2
+    ai_explanation              TEXT,
+    ai_explanation_status       VARCHAR(16),                          -- PENDING | READY | FAILED
+    -- AI essay detection — ADR-006 §3
+    ai_detection_score          NUMERIC(5,4) CHECK (ai_detection_score IS NULL OR (ai_detection_score BETWEEN 0 AND 1)),
+    ai_detection_method         VARCHAR(32),                          -- perplexity | stylometry | hybrid
+    ai_detection_details        JSONB,
+    submitted_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    graded_at                   TIMESTAMPTZ,
+    UNIQUE (attempt_id, position)
+);
+CREATE INDEX ix_answers_attempt ON core.attempt_answers(attempt_id);
+CREATE INDEX ix_answers_question ON core.attempt_answers(question_id);
+CREATE INDEX ix_answers_ai_detection_high ON core.attempt_answers(ai_detection_score DESC)
+    WHERE ai_detection_score >= 0.7;
+
+-- -----------------------------------------------------------------------------
+-- 4.7. Stylometry baseline + LLM cache (AI Combo A — ADR-006, ADR-007)
+-- -----------------------------------------------------------------------------
+
+-- Baseline phong cách viết mỗi student (update dần sau mỗi essay đã confirmed)
+CREATE TABLE core.student_writing_profiles (
+    user_id         UUID PRIMARY KEY,
+    avg_embedding   vector(384) NOT NULL,
+    sample_count    INT NOT NULL DEFAULT 0 CHECK (sample_count >= 0),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Cache LLM response (giảm token cost)
+CREATE TABLE core.ai_cache (
+    cache_key           TEXT PRIMARY KEY,                             -- sha256(prompt_type + inputs + model)
+    response            JSONB NOT NULL,
+    model               VARCHAR(64) NOT NULL,
+    tokens_prompt       INT,
+    tokens_completion   INT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_hit_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    hit_count           INT NOT NULL DEFAULT 0
+);
+CREATE INDEX ix_ai_cache_last_hit ON core.ai_cache(last_hit_at DESC);
+CREATE INDEX ix_ai_cache_model    ON core.ai_cache(model);
+
+-- -----------------------------------------------------------------------------
+-- 4.8. Outbox + processed_events (transactional outbox — ADR-001, ADR-003 §3)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE core.outbox (
+    id              BIGSERIAL PRIMARY KEY,
+    event_id        UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),
+    topic           TEXT NOT NULL,
+    aggregate_type  VARCHAR(64) NOT NULL,                             -- 'Attempt','Exam','Document'...
+    aggregate_id    VARCHAR(64) NOT NULL,
+    partition_key   TEXT,
+    payload         JSONB NOT NULL,
+    headers         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at    TIMESTAMPTZ,
+    attempts        INT NOT NULL DEFAULT 0
+);
+CREATE INDEX ix_outbox_unpublished ON core.outbox(created_at)
+    WHERE published_at IS NULL;
+
+CREATE TABLE core.processed_events (
+    event_id        UUID PRIMARY KEY,
+    topic           TEXT NOT NULL,
+    processed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_processed_events_topic ON core.processed_events(topic, processed_at DESC);
 
 
 -- =============================================================================
--- 12. CHEATING DETECTION MỞ RỘNG (cheating-detection-service-design.md §V)
+-- 5. ANALYTICS VIEWS (thay ClickHouse — ADR-005)
 -- =============================================================================
 
-CREATE TABLE cheat_review_queue (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id              UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE CASCADE,
-    triggered_by_event      UUID REFERENCES cheat_events(id) ON DELETE SET NULL,
-    risk_score_at_trigger   SMALLINT NOT NULL,
-    severity                VARCHAR(10) NOT NULL,   -- low|medium|high|critical
-    assigned_to             UUID REFERENCES users(id),
-    status                  VARCHAR(20) DEFAULT 'pending', -- pending|in_review|resolved|escalated
-    decision                VARCHAR(20),             -- confirmed|dismissed|escalated
-    decision_reason         TEXT,
-    reviewed_at             TIMESTAMPTZ,
-    created_at              TIMESTAMPTZ DEFAULT NOW()
+-- 5.1. Thống kê mỗi exam (count, avg, median, min/max score)
+CREATE OR REPLACE VIEW core.v_exam_stats AS
+SELECT
+    e.id                                                          AS exam_id,
+    e.title,
+    COUNT(a.id)                                                   AS total_attempts,
+    COUNT(a.id) FILTER (WHERE a.status = 'GRADED')                AS graded_count,
+    AVG(a.total_score) FILTER (WHERE a.status = 'GRADED')         AS avg_score,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY a.total_score)
+        FILTER (WHERE a.status = 'GRADED')                        AS median_score,
+    MIN(a.total_score) FILTER (WHERE a.status = 'GRADED')         AS min_score,
+    MAX(a.total_score) FILTER (WHERE a.status = 'GRADED')         AS max_score
+FROM core.exams e
+LEFT JOIN core.exam_attempts a ON a.exam_id = e.id
+GROUP BY e.id, e.title;
+
+-- 5.2. Histogram điểm (bucket 10 điểm) per exam
+CREATE OR REPLACE VIEW core.v_score_histogram AS
+SELECT
+    exam_id,
+    FLOOR(total_score / 10) * 10                                  AS bucket_start,
+    COUNT(*)                                                      AS count
+FROM core.exam_attempts
+WHERE status = 'GRADED' AND total_score IS NOT NULL
+GROUP BY exam_id, bucket_start
+ORDER BY exam_id, bucket_start;
+
+-- 5.3. Chất lượng câu hỏi (pct đúng + lần xuất hiện)
+CREATE OR REPLACE VIEW core.v_question_quality AS
+SELECT
+    q.id                                                          AS question_id,
+    q.type,
+    q.difficulty,
+    COUNT(aa.id)                                                  AS answer_count,
+    COALESCE(
+        AVG(CASE WHEN aa.score > 0 THEN 1 ELSE 0 END)::numeric(5,4),
+        0
+    )                                                             AS pct_correct
+FROM core.questions q
+LEFT JOIN core.attempt_answers aa ON aa.question_id = q.id
+GROUP BY q.id, q.type, q.difficulty;
+
+
+-- =============================================================================
+-- 6. SCHEMA `proctoring`
+-- =============================================================================
+
+CREATE TYPE proctoring.event_type AS ENUM (
+    'TAB_BLUR',
+    'TAB_FOCUS',
+    'PASTE',
+    'COPY',
+    'WINDOW_RESIZE',
+    'FULLSCREEN_EXIT',
+    'HEARTBEAT_LOST',
+    'TIMING_ANOMALY'
 );
-CREATE INDEX idx_review_pending  ON cheat_review_queue(status, severity, created_at)
-    WHERE status IN ('pending','in_review');
-CREATE INDEX idx_review_assignee ON cheat_review_queue(assigned_to, status)
-    WHERE status IN ('pending','in_review');
+CREATE TYPE proctoring.severity AS ENUM ('INFO','WARN','HIGH');
 
-CREATE TABLE cheat_appeals (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id          UUID NOT NULL REFERENCES exam_attempts(id) ON DELETE RESTRICT,
-    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    reason              TEXT NOT NULL,
-    evidence_s3_keys    TEXT[] DEFAULT '{}',
-    status              VARCHAR(20) DEFAULT 'pending',  -- pending|under_review|resolved
-    reviewed_by         UUID REFERENCES users(id),
-    decision            VARCHAR(20),                     -- upheld|overturned
-    decision_reason     TEXT,
-    created_at          TIMESTAMPTZ DEFAULT NOW(),
-    resolved_at         TIMESTAMPTZ
+-- Raw events (append-only audit log)
+CREATE TABLE proctoring.cheat_events (
+    id              BIGSERIAL PRIMARY KEY,
+    event_id        UUID NOT NULL UNIQUE,                             -- từ Core WS forward
+    attempt_id      UUID NOT NULL,
+    student_id      UUID NOT NULL,
+    event_type      proctoring.event_type NOT NULL,
+    event_data      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at     TIMESTAMPTZ NOT NULL,
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_appeal_user   ON cheat_appeals(user_id, created_at DESC);
-CREATE INDEX idx_appeal_status ON cheat_appeals(status, created_at) WHERE status != 'resolved';
+CREATE INDEX ix_cheat_events_attempt ON proctoring.cheat_events(attempt_id, occurred_at);
+CREATE INDEX ix_cheat_events_type    ON proctoring.cheat_events(event_type, occurred_at DESC);
 
-
--- =============================================================================
--- 13. RELIABILITY — TRANSACTIONAL OUTBOX & CONSUMER IDEMPOTENCY (ADR-001)
--- =============================================================================
--- Mỗi service ghi state change DOMAIN + INSERT INTO outbox trong 1 transaction.
--- Relayer process poll table, publish Kafka, mark published_at. Partition-friendly:
--- created_at đã có index, có thể convert PARTITION BY RANGE (created_at) khi >10M row.
-
-CREATE TABLE outbox (
-    event_id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    aggregate_type   VARCHAR(50) NOT NULL,         -- "exam_attempt", "user", ...
-    aggregate_id     VARCHAR(64) NOT NULL,         -- UUID hoặc composite key dạng string
-    topic            VARCHAR(100) NOT NULL,        -- Kafka topic đích
-    event_type       VARCHAR(100) NOT NULL,        -- Logical event type
-    payload          JSONB       NOT NULL,         -- Avro-compatible JSON payload
-    headers          JSONB       DEFAULT '{}'::jsonb, -- trace_id, span_id, schema_version
-    partition_key    VARCHAR(128),                 -- key Kafka partitioning (null = random)
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    published_at     TIMESTAMPTZ,                  -- NULL = pending
-    publish_attempts SMALLINT    NOT NULL DEFAULT 0,
-    last_error       TEXT
+-- Alert đã aggregate (gửi cho coi thi)
+CREATE TABLE proctoring.cheat_alerts (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    attempt_id      UUID NOT NULL,
+    student_id      UUID NOT NULL,
+    rule_name       VARCHAR(64) NOT NULL,                             -- 'EXCESSIVE_TAB_BLUR','LARGE_PASTE'...
+    severity        proctoring.severity NOT NULL,
+    evidence        JSONB NOT NULL,                                   -- {count, threshold, window, sample_event_ids[]}
+    reviewed_by     UUID,                                             -- teacher id
+    reviewed_at     TIMESTAMPTZ,
+    review_decision VARCHAR(16),                                      -- ACCEPT | DISMISS
+    review_note     TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX ix_cheat_alerts_attempt    ON proctoring.cheat_alerts(attempt_id, created_at DESC);
+CREATE INDEX ix_cheat_alerts_unreviewed ON proctoring.cheat_alerts(created_at)
+    WHERE reviewed_at IS NULL;
 
--- Relayer claim rows pending (FOR UPDATE SKIP LOCKED):
-CREATE INDEX idx_outbox_pending   ON outbox (created_at)   WHERE published_at IS NULL;
--- Cleanup job tìm row đã publish cũ:
-CREATE INDEX idx_outbox_published ON outbox (published_at) WHERE published_at IS NOT NULL;
-
-COMMENT ON TABLE outbox IS
-    'Transactional outbox — cùng transaction với domain state change, relayer publish Kafka sau đó.';
-
--- processed_events: per-consumer dedupe cho at-least-once Kafka.
--- INSERT ... ON CONFLICT DO NOTHING → 0 row = event đã xử lý.
--- MVP: 1 bảng chung với cột consumer_group. Phase 2 tách schema per service.
-CREATE TABLE processed_events (
-    event_id        UUID        NOT NULL,
-    consumer_group  VARCHAR(100) NOT NULL,    -- ví dụ "exam-service-grading-consumer"
-    topic           VARCHAR(100) NOT NULL,
-    processed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (event_id, consumer_group)
+-- Session tracking (heartbeat)
+CREATE TABLE proctoring.proctoring_sessions (
+    attempt_id          UUID PRIMARY KEY,
+    started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_heartbeat_at   TIMESTAMPTZ,
+    client_user_agent   TEXT,
+    client_ip           INET,
+    ended_at            TIMESTAMPTZ
 );
 
-CREATE INDEX idx_processed_events_processed_at ON processed_events (processed_at);
+-- Outbox + processed_events riêng cho proctoring
+CREATE TABLE proctoring.outbox (
+    id              BIGSERIAL PRIMARY KEY,
+    event_id        UUID NOT NULL UNIQUE DEFAULT uuid_generate_v4(),
+    topic           TEXT NOT NULL,
+    aggregate_type  VARCHAR(64) NOT NULL,
+    aggregate_id    VARCHAR(64) NOT NULL,
+    partition_key   TEXT,
+    payload         JSONB NOT NULL,
+    headers         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at    TIMESTAMPTZ,
+    attempts        INT NOT NULL DEFAULT 0
+);
+CREATE INDEX ix_proctoring_outbox_unpublished ON proctoring.outbox(created_at)
+    WHERE published_at IS NULL;
 
-COMMENT ON TABLE processed_events IS
-    'Dedupe at-least-once Kafka consumer. INSERT ... ON CONFLICT DO NOTHING; nếu 0 row → đã xử lý.';
+CREATE TABLE proctoring.processed_events (
+    event_id        UUID PRIMARY KEY,
+    topic           TEXT NOT NULL,
+    processed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_proctoring_processed_events_topic ON proctoring.processed_events(topic, processed_at DESC);
 
 
 -- =============================================================================
--- 14. TRIGGERS
+-- 7. TRIGGERS — updated_at tự động
 -- =============================================================================
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER AS $$
+
+CREATE OR REPLACE FUNCTION core.fn_touch_updated_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.updated_at = NOW();
+    NEW.updated_at := now();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
-CREATE TRIGGER trg_users_updated
-    BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_users_updated_at
+    BEFORE UPDATE ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION core.fn_touch_updated_at();
 
-CREATE TRIGGER trg_exams_updated
-    BEFORE UPDATE ON exams
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_questions_updated_at
+    BEFORE UPDATE ON core.questions
+    FOR EACH ROW EXECUTE FUNCTION core.fn_touch_updated_at();
 
-CREATE TRIGGER trg_roles_updated
-    BEFORE UPDATE ON roles
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER trg_exams_updated_at
+    BEFORE UPDATE ON core.exams
+    FOR EACH ROW EXECUTE FUNCTION core.fn_touch_updated_at();
 
-
--- =============================================================================
--- 15. ROLES & GRANTS (optional, local env bỏ qua)
--- =============================================================================
--- CREATE ROLE svc_auth      LOGIN PASSWORD 'auth_pass'      CONNECTION LIMIT 50;
--- CREATE ROLE svc_exam      LOGIN PASSWORD 'exam_pass'      CONNECTION LIMIT 200;
--- CREATE ROLE svc_cheat     LOGIN PASSWORD 'cheat_pass'     CONNECTION LIMIT 100;
--- CREATE ROLE svc_analytics LOGIN PASSWORD 'analytics_pass' CONNECTION LIMIT 20;
--- CREATE ROLE svc_readonly  LOGIN PASSWORD 'readonly_pass'  CONNECTION LIMIT 50;
 
 -- =============================================================================
--- END OF SCHEMA
+-- END
 -- =============================================================================
