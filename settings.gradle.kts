@@ -21,17 +21,4 @@ dependencyResolutionManagement {
 }
 
 // --- Java services -----------------------------------------------------------
-include(":services:auth")
-project(":services:auth").projectDir = file("services/auth")
-
-include(":services:exam")
-project(":services:exam").projectDir = file("services/exam")
-
-include(":services:question")
-project(":services:question").projectDir = file("services/question")
-
-include(":services:analytics")
-project(":services:analytics").projectDir = file("services/analytics")
-
-include(":services:cheat")
-project(":services:cheat").projectDir = file("services/cheat")
+// (empty — services wiped for re-scaffold; add include() lines when each service is scaffolded)
