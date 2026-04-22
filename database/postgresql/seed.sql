@@ -29,7 +29,11 @@ INSERT INTO auth.users (id, email, password_hash, full_name, role) VALUES
 
 
 -- -----------------------------------------------------------------------------
--- Questions (4 MCQ + 1 Essay; chưa có embedding — AI service sẽ populate khi demo)
+-- Questions (4 MCQ + 1 SHORT_ANSWER + 1 Essay)
+-- embedding = NULL sau seed. AI service sẽ populate qua endpoint POST /embed
+-- khi được Core gọi lúc CRUD question. Dedupe similarity query phải handle
+-- NULL: `WHERE embedding IS NOT NULL AND (1 - (embedding <=> $new)) < 0.08`.
+-- Xem docs/ai-service-design.md §3.6.
 -- -----------------------------------------------------------------------------
 INSERT INTO core.questions (id, type, difficulty, content, metadata, created_by) VALUES
     ('b0000000-0000-0000-0000-000000000001', 'MCQ_SINGLE', 'EASY',

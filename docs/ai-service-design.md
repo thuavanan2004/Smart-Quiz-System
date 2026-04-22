@@ -17,7 +17,7 @@ Ngoài ra cung cấp endpoint **embedding** cho Core dùng khi CRUD câu hỏi.
 - 2 consumer Kafka: `grading.request.v1`, `question.generation.request.v1`, `tutor.explanation.request.v1`.
 - 3 producer: `grading.result.v1`, `question.generation.result.v1`, `tutor.explanation.result.v1`.
 - 5 REST endpoint (được Core gọi nội bộ hoặc debug).
-- Cache aggressive qua `core.ai_cache` (key = sha256(prompt_type + inputs + model)).
+- Cache aggressive qua `core.ai_cache` (key = sha256 của **canonical JSON**, xem §4.5).
 - Load 2 local model lúc startup: `sentence-transformers/all-MiniLM-L6-v2` (384d embedding) + `distilgpt2` (perplexity, ~350MB).
 - Gọi LLM API (Gemini 2.0 Flash hoặc Claude Haiku 4.5).
 
@@ -353,6 +353,40 @@ async def grade(event):
         **result
     })
 ```
+
+### 4.5. Cache key — canonical hash (tránh cache miss do JSON key order)
+
+Key phải **stable** giữa các lần gọi cho input tương đương. Nếu serialize dict
+bình thường, `{"a":1,"b":2}` và `{"b":2,"a":1}` cho 2 key khác → cache miss.
+
+**Quy tắc**:
+```python
+import hashlib, json
+
+PROMPT_VERSION = 1  # bump khi sửa prompt template
+
+def hash_key(prompt_type: str, inputs: dict, model: str) -> str:
+    payload = {
+        "v": PROMPT_VERSION,
+        "type": prompt_type,
+        "model": model,
+        "inputs": inputs,
+    }
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,         # bắt buộc — deterministic
+        separators=(",", ":"),  # không whitespace
+        ensure_ascii=False,     # giữ tiếng Việt
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+```
+
+Recursive: nếu `inputs` chứa dict lồng nhau, `json.dumps(sort_keys=True)` tự
+sort mọi level. Với list giữ thứ tự (có ý nghĩa — list options của MCQ).
+
+**Version bump**: khi prompt template đổi, bump `PROMPT_VERSION` → toàn bộ cache
+cũ trở thành miss (không xung đột key nhưng không phục vụ cache hit). Entry cũ
+sẽ được cleanup bởi cron `last_hit_at < now - 90d`.
 
 ## 5. Mô hình chi tiết feature
 

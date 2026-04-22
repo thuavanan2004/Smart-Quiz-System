@@ -153,7 +153,12 @@ volumes:
 # Endpoint summary:
 #   PostgreSQL  localhost:5432   (user=postgres, pass=postgres, db=smartquiz)
 #   Redis       localhost:6379
-#   Kafka       localhost:29092  (services chạy ngoài Docker)
+#   Kafka       localhost:29092  (services chạy ngoài Docker; Linux OK, macOS/Windows
+#                                 Docker Desktop cũng OK vì đã EXPOSE port 29092)
 #               kafka:9092       (services trong cùng compose network)
 #   Kafka UI    localhost:8080   (chỉ khi --profile ui)
 #   Ollama      localhost:11434  (chỉ khi --profile ai-fallback)
+#
+# Note: trên macOS/Windows, nếu service chạy trong 1 container khác mà không
+# cùng network với sq-kafka, dùng `host.docker.internal:29092` thay vì `localhost:29092`.
+# Services trong compose file này đều ở cùng default network → dùng `kafka:9092`.

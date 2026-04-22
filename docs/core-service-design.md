@@ -156,7 +156,7 @@ Response 202:
 
 **POST /exams/{id}/start**:
 - Kiểm tra `open_at <= now <= close_at`, assignment tồn tại, chưa có attempt.
-- Tạo `exam_attempts` (state=IN_PROGRESS, state_version=0, deadline_at = now + duration_min).
+- Tạo `exam_attempts` (state=IN_PROGRESS, state_version=0). **App layer bắt buộc set `deadline_at = started_at + exam.duration_min * 1 minute`** — DB không auto-compute (cột NOT NULL, không DEFAULT) vì cần lookup `exams.duration_min` khác bảng.
 - Return `{attempt_id, ws_url, questions: [{position, question: snapshot}], deadline_at}`.
 - Nếu exam có `shuffle_questions` → shuffle per-attempt deterministic (seed = attempt_id).
 
@@ -222,6 +222,8 @@ Endpoint: `ws://localhost:8102/ws/attempts/{attempt_id}?token=<access_token>`.
 ```
 
 **Cheat event forward**: nhận `CHEAT_EVENT` → publish `cheat.event.raw.v1` Kafka (fire-and-forget, không blocking). Partition key = `attempt_id`.
+
+> **Trade-off đã chấp nhận**: cheat event **không đi qua outbox** — nếu broker down trong giây đó, event có thể mất. Chọn trade-off này vì (a) cheat event là tín hiệu advisory, mất 1 event không ảnh hưởng tính đúng đắn attempt, (b) outbox relayer poll 5s không đủ realtime cho detector L1–L3. Chấp nhận at-most-once cho cheat; essay grading thì at-least-once qua outbox như bình thường. Xem ADR-001 §trade-off.
 
 **Heartbeat**: client gửi mỗi 10s. Server track lần cuối trong Redis `session:ws:{attempt_id}`. Nếu miss 3 beat → log WARN + publish `cheat.event.raw.v1` với `event_type=HEARTBEAT_LOST`.
 

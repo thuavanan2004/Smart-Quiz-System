@@ -71,7 +71,7 @@ CREATE UNIQUE INDEX ux_refresh_tokens_hash ON auth.refresh_tokens(token_hash);
 ### 4.1. Exam + Question
 
 ```sql
-CREATE TYPE core.question_type AS ENUM ('MCQ_SINGLE','MCQ_MULTI','TRUE_FALSE','ESSAY');
+CREATE TYPE core.question_type AS ENUM ('MCQ_SINGLE','MCQ_MULTI','TRUE_FALSE','SHORT_ANSWER','ESSAY');
 CREATE TYPE core.difficulty   AS ENUM ('EASY','MEDIUM','HARD');
 
 CREATE TABLE core.questions (
@@ -209,6 +209,7 @@ CREATE TABLE core.question_generation_jobs (
     result_count    INT DEFAULT 0,
     error_message   TEXT,
     generated_question_ids UUID[] DEFAULT '{}',
+    preview_payload JSONB,                       -- full result trước khi teacher commit (xem core-service-design §3.2)
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at    TIMESTAMPTZ
 );
@@ -297,16 +298,12 @@ FROM core.exam_attempts
 WHERE status = 'GRADED'
 GROUP BY exam_id, bucket_start;
 
--- Question quality (tỉ lệ trả lời đúng)
-CREATE VIEW core.v_question_quality AS
-SELECT
-    q.id AS question_id,
-    q.type,
-    COUNT(aa.id) AS answer_count,
-    AVG(CASE WHEN aa.score > 0 THEN 1 ELSE 0 END)::numeric(5,4) AS pct_correct
-FROM core.questions q
-LEFT JOIN core.attempt_answers aa ON aa.question_id = q.id
-GROUP BY q.id, q.type;
+-- Question quality
+--   pct_full_credit : % attempt đạt điểm tối đa cho câu (chuẩn nhất cho mọi loại).
+--   pct_any_credit  : % attempt có điểm > 0 (partial credit).
+--   avg_score_ratio : trung bình score / max_points (0..1).
+-- Dùng exam_questions.points thay vì hardcode vì points thay đổi per-exam.
+CREATE VIEW core.v_question_quality AS ...;   -- xem schema.sql §5.3 cho full SQL
 ```
 
 Nếu demo cần query nặng hơn → convert sang `MATERIALIZED VIEW` + refresh cron.

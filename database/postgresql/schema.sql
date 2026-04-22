@@ -67,9 +67,10 @@ CREATE SCHEMA IF NOT EXISTS proctoring;
 -- GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA proctoring TO proctoring_app;
 -- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA proctoring TO proctoring_app;
 --
--- -- AI service đọc document text + question embeddings, update ai_cache + stylometry
--- GRANT SELECT ON core.documents, core.questions, core.student_writing_profiles TO ai_reader;
--- GRANT INSERT, UPDATE, SELECT ON core.ai_cache TO ai_reader;
+-- -- AI service đọc document text + question embeddings, update stylometry baseline + ai_cache
+-- GRANT SELECT                              ON core.documents, core.questions        TO ai_reader;
+-- GRANT SELECT, INSERT, UPDATE              ON core.ai_cache                         TO ai_reader;
+-- GRANT SELECT, INSERT                      ON core.student_writing_profiles         TO ai_reader;
 -- GRANT UPDATE (avg_embedding, sample_count, updated_at) ON core.student_writing_profiles TO ai_reader;
 
 
@@ -126,7 +127,7 @@ CREATE TYPE core.gen_job_status  AS ENUM ('QUEUED','RUNNING','DONE','FAILED');
 
 CREATE TABLE core.documents (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    uploaded_by     UUID NOT NULL,                                    -- auth.users.id (logical FK)
+    uploaded_by     UUID NOT NULL,                                    -- logical FK -> auth.users.id (cross-schema, không enforce)
     filename        TEXT NOT NULL,
     mime_type       VARCHAR(128) NOT NULL,
     size_bytes      BIGINT NOT NULL CHECK (size_bytes > 0),
@@ -373,19 +374,36 @@ WHERE status = 'GRADED' AND total_score IS NOT NULL
 GROUP BY exam_id, bucket_start
 ORDER BY exam_id, bucket_start;
 
--- 5.3. Chất lượng câu hỏi (pct đúng + lần xuất hiện)
+-- 5.3. Chất lượng câu hỏi
+--   pct_full_credit: tỉ lệ đạt điểm tối đa (áp dụng cho mọi loại, chuẩn nhất).
+--   pct_any_credit : tỉ lệ có điểm > 0 (partial credit cho MCQ_MULTI, SHORT_ANSWER fuzzy).
+-- Phải JOIN core.exam_questions để biết max points tại thời điểm exam publish
+-- (không dùng core.questions hiện tại vì points thay đổi theo exam).
 CREATE OR REPLACE VIEW core.v_question_quality AS
 SELECT
-    q.id                                                          AS question_id,
+    q.id                                                                         AS question_id,
     q.type,
     q.difficulty,
-    COUNT(aa.id)                                                  AS answer_count,
+    COUNT(aa.id)                                                                 AS answer_count,
+    COALESCE(
+        AVG(CASE WHEN aa.score >= eq.points THEN 1 ELSE 0 END)::numeric(5,4),
+        0
+    )                                                                            AS pct_full_credit,
     COALESCE(
         AVG(CASE WHEN aa.score > 0 THEN 1 ELSE 0 END)::numeric(5,4),
         0
-    )                                                             AS pct_correct
+    )                                                                            AS pct_any_credit,
+    COALESCE(
+        AVG(aa.score / NULLIF(eq.points, 0))::numeric(5,4),
+        0
+    )                                                                            AS avg_score_ratio
 FROM core.questions q
 LEFT JOIN core.attempt_answers aa ON aa.question_id = q.id
+LEFT JOIN core.exam_questions   eq ON eq.question_id = q.id
+                                   AND EXISTS (
+                                       SELECT 1 FROM core.exam_attempts ea
+                                       WHERE ea.id = aa.attempt_id AND ea.exam_id = eq.exam_id
+                                   )
 GROUP BY q.id, q.type, q.difficulty;
 
 
@@ -406,6 +424,7 @@ CREATE TYPE proctoring.event_type AS ENUM (
 CREATE TYPE proctoring.severity AS ENUM ('INFO','WARN','HIGH');
 
 -- Raw events (append-only audit log)
+-- attempt_id/student_id là logical FK (xem note ở cheat_alerts dưới).
 CREATE TABLE proctoring.cheat_events (
     id              BIGSERIAL PRIMARY KEY,
     event_id        UUID NOT NULL UNIQUE,                             -- từ Core WS forward
@@ -420,6 +439,9 @@ CREATE INDEX ix_cheat_events_attempt ON proctoring.cheat_events(attempt_id, occu
 CREATE INDEX ix_cheat_events_type    ON proctoring.cheat_events(event_type, occurred_at DESC);
 
 -- Alert đã aggregate (gửi cho coi thi)
+-- attempt_id/student_id là logical FK -> core.exam_attempts/auth.users (cross-schema).
+-- Không enforce REFERENCES vì proctoring schema tách riêng; orphan có thể xảy ra nếu
+-- attempt bị hard-delete (thực tế core chỉ soft-delete qua status=CANCELLED).
 CREATE TABLE proctoring.cheat_alerts (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     attempt_id      UUID NOT NULL,
@@ -473,9 +495,10 @@ CREATE INDEX ix_proctoring_processed_events_topic ON proctoring.processed_events
 
 
 -- =============================================================================
--- 7. TRIGGERS — updated_at tự động
+-- 7. TRIGGERS
 -- =============================================================================
 
+-- 7.1. Auto-touch updated_at
 CREATE OR REPLACE FUNCTION core.fn_touch_updated_at()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -495,6 +518,36 @@ CREATE TRIGGER trg_questions_updated_at
 CREATE TRIGGER trg_exams_updated_at
     BEFORE UPDATE ON core.exams
     FOR EACH ROW EXECUTE FUNCTION core.fn_touch_updated_at();
+
+-- 7.2. Auto-set documents.processed_at khi status chuyển sang READY
+CREATE OR REPLACE FUNCTION core.fn_documents_processed_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status = 'READY' AND OLD.status <> 'READY' THEN
+        NEW.processed_at := now();
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_documents_processed_at
+    BEFORE UPDATE ON core.documents
+    FOR EACH ROW EXECUTE FUNCTION core.fn_documents_processed_at();
+
+-- 7.3. Auto-set attempt_answers.graded_at khi score được set lần đầu
+CREATE OR REPLACE FUNCTION core.fn_answers_graded_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.score IS NOT NULL AND OLD.score IS NULL THEN
+        NEW.graded_at := COALESCE(NEW.graded_at, now());
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_answers_graded_at
+    BEFORE UPDATE ON core.attempt_answers
+    FOR EACH ROW EXECUTE FUNCTION core.fn_answers_graded_at();
 
 
 -- =============================================================================
