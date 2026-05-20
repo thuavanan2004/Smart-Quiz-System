@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/grading.result.v1.schema.json",
+  "title": "GradingResultV1",
+  "description": "AI trả kết quả chấm essay / short-answer semantic, kèm AI detection nếu yêu cầu.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "grading.result.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["request_event_id", "attempt_id", "position", "score", "provider"],
+      "additionalProperties": false,
+      "properties": {
+        "request_event_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Tham chiếu event_id của grading.request.v1 đã sinh ra result này."
+        },
+        "attempt_id": { "type": "string", "format": "uuid" },
+        "position":   { "type": "integer", "minimum": 1 },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Điểm AI chấm. ≤ max_score của câu."
+        },
+        "feedback": {
+          "type": ["string", "null"],
+          "description": "Nhận xét human-readable, hiển thị cho student/teacher."
+        },
+        "rubric_breakdown": {
+          "type": "array",
+          "description": "Chi tiết điểm theo rubric (chỉ với mode=essay).",
+          "items": {
+            "type": "object",
+            "required": ["criterion", "points", "given"],
+            "properties": {
+              "criterion": { "type": "string" },
+              "points":    { "type": "number" },
+              "given":     { "type": "number" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "ai_detection": {
+          "type": ["object", "null"],
+          "description": "Có nếu request.need_ai_detection=true.",
+          "required": ["score", "method", "flag"],
+          "additionalProperties": false,
+          "properties": {
+            "score":  { "type": "number", "minimum": 0, "maximum": 1 },
+            "method": { "type": "string", "enum": ["perplexity", "stylometry", "hybrid"] },
+            "flag":   { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"] },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["gemini", "ollama", "claude", "openai", "cache"],
+          "description": "LLM provider thực sự dùng (sau routing). cache = phục vụ từ ai_cache hit."
+        },
+        "tokens_used": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tổng token tiêu thụ (prompt + completion)."
+        },
+        "error": {
+          "type": ["object", "null"],
+          "description": "Set khi AI fail toàn bộ provider (kể cả fallback Ollama).",
+          "additionalProperties": false,
+          "properties": {
+            "code":    { "type": "string" },
+            "message": { "type": "string" }
+          },
+          "required": ["code", "message"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/tutor.explanation.request.v1.schema.json",
+  "title": "TutorExplanationRequestV1",
+  "description": "Core publish 1 event chứa batch wrong answers của 1 attempt. AI fanout xử lý parallel (asyncio.gather, max 5).",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "tutor.explanation.request.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["attempt_id", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": { "type": "string", "format": "uuid" },
+        "student_id": { "type": "string", "format": "uuid" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["position", "question_id", "question", "correct_answer", "user_answer"],
+            "additionalProperties": false,
+            "properties": {
+              "position":    { "type": "integer", "minimum": 1 },
+              "question_id": { "type": "string", "format": "uuid" },
+              "question": {
+                "type": "object",
+                "description": "Snapshot tối thiểu để LLM hiểu. Thường là stem + options + correct_answer.",
+                "additionalProperties": true,
+                "properties": {
+                  "stem":    { "type": "string" },
+                  "options": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "correct_answer": {
+                "type": "string",
+                "description": "Text dạng đã render (ví dụ với MCQ là nội dung option đúng)."
+              },
+              "user_answer": {
+                "type": "string",
+                "description": "Text học sinh chọn, đã render."
+              },
+              "context": {
+                "type": ["string", "null"],
+                "description": "Snippet tài liệu liên quan, nếu câu hỏi được generate từ document."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

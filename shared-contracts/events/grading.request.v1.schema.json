@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/grading.request.v1.schema.json",
+  "title": "GradingRequestV1",
+  "description": "Core yêu cầu AI chấm 1 essay hoặc short-answer fallback semantic.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "grading.request.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["attempt_id", "position", "question_id", "mode", "question", "student_answer", "max_score"],
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id":  { "type": "string", "format": "uuid" },
+        "position":    { "type": "integer", "minimum": 1 },
+        "question_id": { "type": "string", "format": "uuid" },
+        "student_id":  { "type": "string", "format": "uuid" },
+        "mode": {
+          "type": "string",
+          "enum": ["essay", "short_answer_semantic"],
+          "description": "essay = full rubric grading; short_answer_semantic = rule fail, fallback."
+        },
+        "question": {
+          "type": "object",
+          "description": "Snapshot câu hỏi (stem + đáp án đúng / rubric).",
+          "additionalProperties": true,
+          "properties": {
+            "stem":             { "type": "string" },
+            "correct_answer":   {},
+            "accepted_variants": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "rubric": {
+              "type": "string",
+              "description": "Bắt buộc khi mode=essay."
+            }
+          }
+        },
+        "student_answer": {
+          "type": "string",
+          "description": "Text học sinh nộp (đã extract từ answer_data)."
+        },
+        "max_score": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Điểm tối đa của câu (= questions.points)."
+        },
+        "need_ai_detection": {
+          "type": "boolean",
+          "default": false,
+          "description": "Có chạy detector AI-essay không. Chỉ true cho essay."
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Số lần Core đã retry. Mỗi retry event_id khác nhưng request_event_id giữ lại nếu cần trace."
+        }
+      }
+    }
+  }
+}

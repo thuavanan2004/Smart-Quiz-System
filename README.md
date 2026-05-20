@@ -106,10 +106,9 @@ docker compose -f infra/docker-compose.dev.yml -f infra/docker-compose.obs.yml u
 ```
 .claude/                 # Skills + settings cho Claude Code
 config/checkstyle/       # Checkstyle config dùng chung cho toàn bộ Java service
-database/                # Schema + seed (PG, Mongo, ClickHouse, ES, Redis)
+database/                # Schema + seed (PG + Redis)
   postgresql/schema.sql  # Single source of truth cho schema PG
-docs/                    # Design docs 7 service + database + ADR
-  adr/                   # Architecture Decision Records
+docs/                    # Design docs 4 service + database
 gradle/, gradlew, *.kts  # Gradle multi-project (Spring Boot services)
 infra/                   # docker-compose.dev.yml + obs stack
 ops/                     # Scripts vận hành (create-topics.sh, gen-jwt-keypair.sh)
@@ -128,7 +127,7 @@ CLAUDE.md                # Guide cho Claude Code (convention, NFR, quick command
 ## Tài liệu
 
 - **Kiến trúc tổng**: [`docs/design.md`](docs/design.md)
-- **Database reference**: [`docs/database.md`](docs/database.md)
+- **Database reference**: [`database/postgresql/README.md`](database/postgresql/README.md) (DDL: [`database/postgresql/schema.sql`](database/postgresql/schema.sql))
 - **Service design** (mỗi service 1 file):
   [`auth`](docs/auth-service-design.md) ·
   [`exam`](docs/exam-service-design.md) ·
@@ -136,9 +135,6 @@ CLAUDE.md                # Guide cho Claude Code (convention, NFR, quick command
   [`ai`](docs/ai-service-design.md) ·
   [`analytics`](docs/analytics-service-design.md) ·
   [`cheat detection`](docs/cheating-detection-service-design.md)
-- **ADRs**:
-  [ADR-001 — SLA / RPO / outbox](docs/adr/ADR-001-sla-rpo-outbox.md) ·
-  [ADR-002 — Analytics vs Cheat split](docs/adr/ADR-002-analytics-vs-cheating-split.md)
 - **Kafka topics**: [`shared-contracts/avro/TOPICS.md`](shared-contracts/avro/TOPICS.md)
 - **OpenAPI Auth**: [`shared-contracts/openapi/auth.v1.yaml`](shared-contracts/openapi/auth.v1.yaml)
 
@@ -147,7 +143,7 @@ CLAUDE.md                # Guide cho Claude Code (convention, NFR, quick command
 - **SLA**: 99.9% single-region (≈43 phút downtime/tháng)
 - **RPO đáp án thi**: ≤ 5s — đạt qua **transactional outbox pattern** (PG ghi
   đáp án + outbox row trong 1 tx, relayer đẩy sang Kafka). Redis là cache
-  write-through, KHÔNG phải nguồn truth. Xem ADR-001.
+  write-through, KHÔNG phải nguồn truth.
 - **Fencing token**: mọi `UPDATE exam_attempts` check `state_version` — chống
   race giữa client submit và cheat-detection auto-suspend.
 - **Consumer at-least-once + idempotent**: dedupe bằng `event_id` lưu trong

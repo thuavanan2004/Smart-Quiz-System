@@ -12,7 +12,7 @@
 - Phát **JWKS public key** qua `/.well-known/jwks.json`.
 - CRUD user cho admin (optional — có endpoint thô sơ).
 
-**Không có** (cắt so với docs production):
+**Không có** (future work):
 - Email verification flow.
 - Forgot password flow.
 - MFA / 2FA.
@@ -23,7 +23,7 @@
 
 ## 2. Entity
 
-Xem `docs/database.md` §3 cho DDL chi tiết. Tóm tắt:
+Xem `database/postgresql/schema.sql` §3 (schema `auth`) cho DDL chi tiết. Tóm tắt:
 
 - `auth.users (id, email, password_hash, full_name, role, is_active, created_at, updated_at)`
 - `auth.refresh_tokens (id, user_id, token_hash, issued_at, expires_at, revoked_at, replaced_by, user_agent, ip)`
@@ -270,8 +270,8 @@ Sau đổi password → revoke toàn bộ refresh token của user.
 
 ## 7. Kafka (DATN: không publish event)
 
-Auth service **không publish event nào trong DATN scope**. Production design có
-`auth.user.registered.v1`, `auth.user.deactivated.v1` — giữ trong archive làm future work.
+Auth service **không publish event nào trong DATN scope**. Future work có thể bổ
+sung `auth.user.registered.v1`, `auth.user.deactivated.v1` khi cần.
 
 **Consumer**: không.
 
@@ -378,5 +378,3 @@ Nếu hội đồng hỏi "scale thế nào":
 - OAuth2 federation (Google sign-in).
 - Key rotation với JWKS multi-key (dual sign 1 tuần).
 - Account lockout + CAPTCHA sau N fail.
-
-Đều đã có trong `docs/archive/production-design/auth-service-design.md`.

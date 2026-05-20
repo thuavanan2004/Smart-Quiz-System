@@ -1,8 +1,7 @@
 # Database setup — SmartQuizSystem (DATN)
 
 Scope DATN chỉ dùng **1 PostgreSQL** (image `pgvector/pgvector:pg16`) + **Redis**.
-Các DB khác (MongoDB, ClickHouse, Elasticsearch) đã archive — xem
-`docs/archive/legacy-databases/`.
+MongoDB / ClickHouse / Elasticsearch là future work, không tracked trong repo.
 
 ## Cấu trúc
 
@@ -63,6 +62,5 @@ Production flow đi qua Flyway per service.
 
 ## Tham chiếu
 
-- `docs/database.md` — chi tiết schema + rationale.
-- `docs/adr/ADR-003..007` — các quyết định đã đóng.
-- `docs/archive/legacy-databases/` — Mongo/ClickHouse/ES (tham khảo scale).
+- `database/postgresql/README.md` — chi tiết schema + role grants + migration workflow.
+- `database/postgresql/schema.sql` — DDL (single source of truth).

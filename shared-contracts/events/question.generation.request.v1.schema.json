@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/question.generation.request.v1.schema.json",
+  "title": "QuestionGenerationRequestV1",
+  "description": "Core (teacher) yêu cầu AI sinh batch câu hỏi từ document hoặc topic thuần.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "question.generation.request.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["job_id", "requested_by", "config"],
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Khóa của question_generation_jobs. Cũng là idempotency key (AI dedupe theo job_id + event_id)."
+        },
+        "requested_by": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Teacher user_id."
+        },
+        "document_id": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "Null nếu generate từ topic thuần (không có document)."
+        },
+        "config": {
+          "type": "object",
+          "required": ["topic", "difficulty", "count", "type"],
+          "additionalProperties": false,
+          "properties": {
+            "topic": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "difficulty": {
+              "type": "string",
+              "enum": ["EASY", "MEDIUM", "HARD"]
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "type": {
+              "type": "string",
+              "enum": ["MCQ_SINGLE", "MCQ_MULTI", "TRUE_FALSE", "SHORT_ANSWER", "ESSAY"]
+            },
+            "language": {
+              "type": "string",
+              "default": "vi",
+              "examples": ["vi", "en"]
+            },
+            "blooms_level": {
+              "type": ["string", "null"],
+              "enum": [null, "remember", "understand", "apply", "analyze", "evaluate", "create"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

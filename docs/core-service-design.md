@@ -1,12 +1,12 @@
 # Core Service — Design (DATN)
 
 > **Port**: 8102 · **Ngôn ngữ**: Java 21 + Spring Boot 3.3 · **DB schema**: `core`
-> Gộp các trách nhiệm Exam + Question + Analytics của docs production, cộng
-> với orchestration AI (§9 scope-datn.md) và document upload.
+> Bao quát Exam + Question + Analytics, kèm orchestration AI (§8 scope-datn.md) và document upload.
 
 ## 1. Trách nhiệm
 
 **Có**:
+
 - CRUD câu hỏi (MCQ, TF, Essay) với content JSONB + embedding vector.
 - CRUD đề thi, gán đề cho học sinh, publish/archive.
 - Lifecycle attempt: start → in-progress → submit → graded, với `state_version` fencing.
@@ -20,6 +20,7 @@
 - Analytics view (PG view) cho teacher dashboard.
 
 **Không có**:
+
 - Xác thực user (Auth service).
 - Thuật toán detect gian lận (Proctoring service).
 - Gọi LLM trực tiếp (AI service).
@@ -27,7 +28,7 @@
 
 ## 2. Entity & DB
 
-Xem `docs/database.md` §4 cho DDL đầy đủ. Nhóm bảng chính:
+Xem `database/postgresql/schema.sql` §4 (schema `core`) cho DDL đầy đủ. Nhóm bảng chính:
 
 ```
 Exam domain     : exams, exam_questions, exam_assignments
@@ -45,48 +46,57 @@ Base URL: `http://localhost:8102/api/v1`. Mọi endpoint (trừ healthcheck) yê
 
 ### 3.1. Questions (`TEACHER`, `ADMIN`)
 
-| Method | Path                         | Mô tả                                          |
-| ------ | ---------------------------- | ---------------------------------------------- |
-| GET    | `/questions`                 | List (query: `type`, `difficulty`, `search`, `page`, `size`) |
-| GET    | `/questions/{id}`            | Chi tiết                                       |
-| POST   | `/questions`                 | Tạo mới (teacher manual input)                 |
-| PUT    | `/questions/{id}`            | Cập nhật (tăng `version`)                      |
-| DELETE | `/questions/{id}`            | Soft delete (nếu chưa dùng trong exam publish) |
-| POST   | `/questions/search-similar`  | Tìm câu hỏi tương tự theo embedding (demo dedupe) |
+| Method | Path                        | Mô tả                                                        |
+| ------ | --------------------------- | ------------------------------------------------------------ |
+| GET    | `/questions`                | List (query: `type`, `difficulty`, `search`, `page`, `size`) |
+| GET    | `/questions/{id}`           | Chi tiết                                                     |
+| POST   | `/questions`                | Tạo mới (teacher manual input)                               |
+| PUT    | `/questions/{id}`           | Cập nhật (tăng `version`)                                    |
+| DELETE | `/questions/{id}`           | Soft delete (nếu chưa dùng trong exam publish)               |
+| POST   | `/questions/search-similar` | Tìm câu hỏi tương tự theo embedding (demo dedupe)            |
 
 **Request POST /questions**:
+
 ```json
 {
   "type": "MCQ_SINGLE",
   "difficulty": "MEDIUM",
   "content": {
     "stem": "Thuật toán sắp xếp nào có độ phức tạp O(n log n)?",
-    "options": ["Bubble sort", "Quick sort", "Selection sort", "Insertion sort"],
+    "options": [
+      "Bubble sort",
+      "Quick sort",
+      "Selection sort",
+      "Insertion sort"
+    ],
     "correct_answer": [1]
   },
-  "metadata": { "topic": "sorting", "tags": ["algorithm","complexity"] }
+  "metadata": { "topic": "sorting", "tags": ["algorithm", "complexity"] }
 }
 ```
 
 Server tự tính embedding của `content.stem` → lưu `embedding`.
 
-### 3.2. Documents + AI generation (§9.1 scope-datn)
+### 3.2. Documents + AI generation (§8.1 scope-datn)
 
-| Method | Path                                              | Mô tả                                              |
-| ------ | ------------------------------------------------- | -------------------------------------------------- |
-| POST   | `/documents/upload`                               | Multipart: upload PDF/DOCX. Giới hạn 20MB.          |
-| GET    | `/documents/{id}`                                 | Metadata + status                                  |
-| GET    | `/documents`                                      | List của user hiện tại                             |
-| POST   | `/questions/generate`                             | Tạo job sinh câu hỏi (202 Accepted, trả job_id)    |
-| GET    | `/questions/generate/{job_id}`                    | Polling status + preview list                      |
-| POST   | `/questions/generate/{job_id}/commit`             | Chọn câu giữ lại, save vào question bank           |
+| Method | Path                                  | Mô tả                                           |
+| ------ | ------------------------------------- | ----------------------------------------------- |
+| POST   | `/documents/upload`                   | Multipart: upload PDF/DOCX. Giới hạn 20MB.      |
+| GET    | `/documents/{id}`                     | Metadata + status                               |
+| GET    | `/documents`                          | List của user hiện tại                          |
+| POST   | `/questions/generate`                 | Tạo job sinh câu hỏi (202 Accepted, trả job_id) |
+| GET    | `/questions/generate/{job_id}`        | Polling status + preview list                   |
+| POST   | `/questions/generate/{job_id}/commit` | Chọn câu giữ lại, save vào question bank        |
 
 **POST /documents/upload**:
+
 ```
 Content-Type: multipart/form-data
 Fields: file (required), title (optional)
 ```
+
 Response 201:
+
 ```json
 { "id": "uuid", "filename": "...", "status": "EXTRACTING", "created_at": "..." }
 ```
@@ -95,21 +105,25 @@ Flow extract: async task (Spring `@Async`) — đọc file từ disk, dùng Apac
 `AutoDetectParser` → `text_content`, `page_count`. Update status → `READY` hoặc `FAILED`.
 
 **POST /questions/generate**:
+
 ```json
 {
-  "document_id": "uuid",       // optional; nếu null → sinh theo topic thuần
+  "document_id": "uuid", // optional; nếu null → sinh theo topic thuần
   "topic": "thuật toán sắp xếp",
   "difficulty": "MEDIUM",
   "count": 10,
   "type": "MCQ_SINGLE"
 }
 ```
+
 Response 202:
+
 ```json
 { "job_id": "uuid", "status": "QUEUED" }
 ```
 
 **GET /questions/generate/{job_id}**:
+
 ```json
 {
   "job_id": "uuid",
@@ -123,47 +137,52 @@ Response 202:
 ```
 
 **POST /questions/generate/{job_id}/commit**:
+
 ```json
 { "accept_temp_ids": ["t1", "t3", "t5"] }
 ```
+
 → INSERT questions thật vào bank, trả về list `{temp_id → question_id}`.
 
 ### 3.3. Exams (`TEACHER`, `ADMIN`)
 
-| Method | Path                                         | Mô tả                               |
-| ------ | -------------------------------------------- | ----------------------------------- |
-| GET    | `/exams`                                     | List (filter: status, created_by)   |
-| GET    | `/exams/{id}`                                | Chi tiết                            |
-| POST   | `/exams`                                     | Tạo DRAFT                           |
-| PUT    | `/exams/{id}`                                | Cập nhật khi DRAFT                  |
-| POST   | `/exams/{id}/questions`                      | Gán câu hỏi (tạo `exam_questions` rows) |
-| POST   | `/exams/{id}/publish`                        | DRAFT → PUBLISHED; snapshot câu hỏi |
-| POST   | `/exams/{id}/archive`                        | → ARCHIVED                          |
-| POST   | `/exams/{id}/assignments`                    | Gán student list                    |
+| Method | Path                      | Mô tả                                   |
+| ------ | ------------------------- | --------------------------------------- |
+| GET    | `/exams`                  | List (filter: status, created_by)       |
+| GET    | `/exams/{id}`             | Chi tiết                                |
+| POST   | `/exams`                  | Tạo DRAFT                               |
+| PUT    | `/exams/{id}`             | Cập nhật khi DRAFT                      |
+| POST   | `/exams/{id}/questions`   | Gán câu hỏi (tạo `exam_questions` rows) |
+| POST   | `/exams/{id}/publish`     | DRAFT → PUBLISHED; snapshot câu hỏi     |
+| POST   | `/exams/{id}/archive`     | → ARCHIVED                              |
+| POST   | `/exams/{id}/assignments` | Gán student list                        |
 
 ### 3.4. Attempts (`STUDENT` cho own, `TEACHER` cho review/override)
 
-| Method | Path                                                     | Mô tả                                            | Role         |
-| ------ | -------------------------------------------------------- | ------------------------------------------------ | ------------ |
-| GET    | `/me/exams`                                              | Exam được assign + status attempt của mình        | STUDENT      |
-| POST   | `/exams/{id}/start`                                      | Tạo attempt (hoặc resume nếu `IN_PROGRESS`)      | STUDENT      |
-| GET    | `/attempts/{id}`                                         | Snapshot + câu hỏi theo thứ tự                   | STUDENT(own) |
-| POST   | `/attempts/{id}/answers`                                 | Lưu đáp án (idempotent theo `position`)          | STUDENT      |
-| POST   | `/attempts/{id}/submit`                                  | Kết thúc                                         | STUDENT      |
-| GET    | `/attempts/{id}/result`                                  | Điểm + từng câu + AI explanation                 | STUDENT(own), TEACHER |
-| GET    | `/teacher/attempts/needing-review`                       | Danh sách essay có `ai_explanation_status=FAILED` hoặc `ai_detection_score >= 0.7` | TEACHER |
-| PATCH  | `/attempts/{id}/answers/{position}/override`             | Teacher override AI score (ADR-008 safety net)   | TEACHER      |
+| Method | Path                                         | Mô tả                                                                              | Role                  |
+| ------ | -------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------- |
+| GET    | `/me/exams`                                  | Exam được assign + status attempt của mình                                         | STUDENT               |
+| POST   | `/exams/{id}/start`                          | Tạo attempt (hoặc resume nếu `IN_PROGRESS`)                                        | STUDENT               |
+| GET    | `/attempts/{id}`                             | Snapshot + câu hỏi theo thứ tự                                                     | STUDENT(own)          |
+| POST   | `/attempts/{id}/answers`                     | Lưu đáp án (idempotent theo `position`)                                            | STUDENT               |
+| POST   | `/attempts/{id}/submit`                      | Kết thúc                                                                           | STUDENT               |
+| GET    | `/attempts/{id}/result`                      | Điểm + từng câu + AI explanation                                                   | STUDENT(own), TEACHER |
+| GET    | `/teacher/attempts/needing-review`           | Danh sách essay có `ai_explanation_status=FAILED` hoặc `ai_detection_score >= 0.7` | TEACHER               |
+| PATCH  | `/attempts/{id}/answers/{position}/override` | Teacher override AI score (safety net)                                             | TEACHER               |
 
 **POST /exams/{id}/start**:
+
 - Kiểm tra `open_at <= now <= close_at`, assignment tồn tại, chưa có attempt.
 - Tạo `exam_attempts` (state=IN_PROGRESS, state_version=0). **App layer bắt buộc set `deadline_at = started_at + exam.duration_min * 1 minute`** — DB không auto-compute (cột NOT NULL, không DEFAULT) vì cần lookup `exams.duration_min` khác bảng.
 - Return `{attempt_id, ws_url, questions: [{position, question: snapshot}], deadline_at}`.
 - Nếu exam có `shuffle_questions` → shuffle per-attempt deterministic (seed = attempt_id).
 
 **POST /attempts/{id}/answers**:
+
 ```json
-{ "position": 3, "answer_data": {"selected": [1]} }
+{ "position": 3, "answer_data": { "selected": [1] } }
 ```
+
 - Fencing: `UPDATE attempt_answers SET ... WHERE attempt_id=$1 AND position=$2 AND attempt_status='IN_PROGRESS'`.
 - Transaction:
   1. UPSERT attempt_answers.
@@ -171,6 +190,7 @@ Response 202:
 - Response 204.
 
 **POST /attempts/{id}/submit**:
+
 - Fencing: `UPDATE exam_attempts SET status='SUBMITTED', state_version=state_version+1, submitted_at=now() WHERE id=$1 AND status='IN_PROGRESS' AND state_version=$expected`.
 - Nếu 0 rows updated → return 409 (race với suspend).
 - Chấm MCQ/TF đồng bộ trong cùng TX.
@@ -183,21 +203,23 @@ Response 202:
 
 **GET /attempts/{id}/result**: cho xem sau khi `status = GRADED` (AI đã xong). Final score per answer = `COALESCE(teacher_override_score, score)`.
 
-**PATCH /attempts/{id}/answers/{position}/override** (teacher safety net, ADR-008):
+**PATCH /attempts/{id}/answers/{position}/override** (teacher safety net):
+
 ```json
 { "score": 8.5, "reason": "AI chấm quá thấp, đáp án đúng ý nhưng viết ngắn" }
 ```
+
 - Validate role TEACHER/ADMIN; teacher phải là creator của exam (ADMIN bỏ qua).
 - UPDATE `teacher_override_score/reason/by/at`, set `graded_by='TEACHER'`.
 - Recompute `exam_attempts.total_score = SUM(COALESCE(override_score, score))`.
 
 ### 3.5. Analytics (`TEACHER`)
 
-| Method | Path                                 | Mô tả                                   |
-| ------ | ------------------------------------ | --------------------------------------- |
-| GET    | `/analytics/exams/{id}/stats`        | `v_exam_stats` + histogram              |
-| GET    | `/analytics/questions/quality`       | `v_question_quality` (difficulty, pct_correct) |
-| GET    | `/analytics/attempts/{id}/cheat`     | List cheat alerts (proxy sang Proctoring) |
+| Method | Path                             | Mô tả                                          |
+| ------ | -------------------------------- | ---------------------------------------------- |
+| GET    | `/analytics/exams/{id}/stats`    | `v_exam_stats` + histogram                     |
+| GET    | `/analytics/questions/quality`   | `v_question_quality` (difficulty, pct_correct) |
+| GET    | `/analytics/attempts/{id}/cheat` | List cheat alerts (proxy sang Proctoring)      |
 
 ## 4. WebSocket
 
@@ -206,6 +228,7 @@ Endpoint: `ws://localhost:8102/ws/attempts/{attempt_id}?token=<access_token>`.
 **Protocol**: STOMP hoặc raw WebSocket + JSON frame. DATN scope dùng raw WS + Spring `WebSocketHandler` cho đơn giản.
 
 **Client → Server message**:
+
 ```json
 { "type": "HEARTBEAT", "ts": "..." }
 { "type": "CHEAT_EVENT", "event_type": "TAB_BLUR", "data": { "duration_ms": 1200 } }
@@ -213,6 +236,7 @@ Endpoint: `ws://localhost:8102/ws/attempts/{attempt_id}?token=<access_token>`.
 ```
 
 **Server → Client message**:
+
 ```json
 { "type": "TIME_REMAINING", "seconds": 1340 }
 { "type": "CHEAT_WARNING", "severity": "HIGH", "rule": "EXCESSIVE_TAB_BLUR", "message": "..." }
@@ -223,7 +247,7 @@ Endpoint: `ws://localhost:8102/ws/attempts/{attempt_id}?token=<access_token>`.
 
 **Cheat event forward**: nhận `CHEAT_EVENT` → publish `cheat.event.raw.v1` Kafka (fire-and-forget, không blocking). Partition key = `attempt_id`.
 
-> **Trade-off đã chấp nhận**: cheat event **không đi qua outbox** — nếu broker down trong giây đó, event có thể mất. Chọn trade-off này vì (a) cheat event là tín hiệu advisory, mất 1 event không ảnh hưởng tính đúng đắn attempt, (b) outbox relayer poll 5s không đủ realtime cho detector L1–L3. Chấp nhận at-most-once cho cheat; essay grading thì at-least-once qua outbox như bình thường. Xem ADR-001 §trade-off.
+> **Trade-off đã chấp nhận**: cheat event **không đi qua outbox** — nếu broker down trong giây đó, event có thể mất. Chọn trade-off này vì (a) cheat event là tín hiệu advisory, mất 1 event không ảnh hưởng tính đúng đắn attempt, (b) outbox relayer poll 5s không đủ realtime cho detector L1–L3. Chấp nhận at-most-once cho cheat; essay grading thì at-least-once qua outbox như bình thường.
 
 **Heartbeat**: client gửi mỗi 10s. Server track lần cuối trong Redis `session:ws:{attempt_id}`. Nếu miss 3 beat → log WARN + publish `cheat.event.raw.v1` với `event_type=HEARTBEAT_LOST`.
 
@@ -233,29 +257,30 @@ Endpoint: `ws://localhost:8102/ws/attempts/{attempt_id}?token=<access_token>`.
 
 ### 5.1. Producer
 
-| Topic                              | Khi nào publish                                                  |
-| ---------------------------------- | ---------------------------------------------------------------- |
-| `exam.answer.submitted.v1`         | Mỗi lần student submit 1 đáp án (via outbox)                     |
-| `exam.attempt.submitted.v1`        | Khi attempt chuyển sang SUBMITTED (via outbox)                   |
-| `grading.request.v1`               | Cho mỗi essay answer sau submit (via outbox)                     |
-| `tutor.explanation.request.v1`     | Batch cho wrong answers sau submit (via outbox)                  |
-| `question.generation.request.v1`   | Khi teacher tạo generation job (via outbox)                      |
-| `cheat.event.raw.v1`               | WebSocket handler forward (direct publish, không qua outbox)     |
+| Topic                            | Khi nào publish                                              |
+| -------------------------------- | ------------------------------------------------------------ |
+| `exam.answer.submitted.v1`       | Mỗi lần student submit 1 đáp án (via outbox)                 |
+| `exam.attempt.submitted.v1`      | Khi attempt chuyển sang SUBMITTED (via outbox)               |
+| `grading.request.v1`             | Cho mỗi essay answer sau submit (via outbox)                 |
+| `tutor.explanation.request.v1`   | Batch cho wrong answers sau submit (via outbox)              |
+| `question.generation.request.v1` | Khi teacher tạo generation job (via outbox)                  |
+| `cheat.event.raw.v1`             | WebSocket handler forward (direct publish, không qua outbox) |
 
 ### 5.2. Consumer
 
-| Topic                              | Xử lý                                                               |
-| ---------------------------------- | ------------------------------------------------------------------- |
-| `grading.result.v1`                | UPDATE attempt_answers.score + ai_detection_*; re-check attempt status → GRADED nếu tất cả đã chấm |
-| `tutor.explanation.result.v1`      | UPDATE attempt_answers.ai_explanation + ai_explanation_status       |
-| `question.generation.result.v1`    | INSERT questions mới + dedupe pgvector; UPDATE job status          |
-| `cheat.alert.v1`                   | WS push `CHEAT_WARNING` cho teacher monitor + student              |
+| Topic                           | Xử lý                                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `grading.result.v1`             | UPDATE attempt*answers.score + ai_detection*\*; re-check attempt status → GRADED nếu tất cả đã chấm |
+| `tutor.explanation.result.v1`   | UPDATE attempt_answers.ai_explanation + ai_explanation_status                                       |
+| `question.generation.result.v1` | INSERT questions mới + dedupe pgvector; UPDATE job status                                           |
+| `cheat.alert.v1`                | WS push `CHEAT_WARNING` cho teacher monitor + student                                               |
 
 ### 5.3. Outbox pattern
 
-**Bảng**: `core.outbox` (xem `database.md` §4.5).
+**Bảng**: `core.outbox` (xem `database/postgresql/schema.sql` §4.8).
 
 **Ghi**:
+
 ```java
 @Transactional
 public void submitAnswer(...) {
@@ -265,6 +290,7 @@ public void submitAnswer(...) {
 ```
 
 **Relayer** (dedicated Spring component, chạy cùng process):
+
 - Leader election qua Redis `SET lock:outbox:core ... NX EX 30`, renew mỗi 10s.
 - Poll mỗi 5s: `SELECT ... FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 500 FOR UPDATE SKIP LOCKED`.
 - Publish Kafka batch với `key=partition_key`, `headers={event_id, schema_version}`.
@@ -315,6 +341,7 @@ public void handleGradingResult(GradingResultEvent event) {
 ```
 
 **Dependencies chính**:
+
 - `spring-boot-starter-web`, `-websocket`, `-data-jpa`, `-security`, `-validation`
 - `spring-kafka`
 - `spring-boot-starter-data-redis`
@@ -434,7 +461,7 @@ public void onGradingResult(GradingResultEvent e) {
 }
 ```
 
-### 8.5. SHORT_ANSWER chấm 2-bước (ADR-008)
+### 8.5. SHORT_ANSWER chấm 2-bước
 
 ```java
 // Bước 1 — rule-based (trong gradeObjective, chạy đồng bộ lúc submit)
@@ -466,6 +493,7 @@ private void gradeShortAnswer(AttemptAnswer a) {
 ```
 
 Helper:
+
 ```java
 private String normalize(String s) {
     if (s == null) return "";
@@ -540,7 +568,7 @@ smartquiz:
       - application/vnd.openxmlformats-officedocument.wordprocessingml.document
   attempt:
     timer-push-interval: 30s
-    heartbeat-grace: 30s  # miss 3 beat → warn
+    heartbeat-grace: 30s # miss 3 beat → warn
 ```
 
 ## 11. Observability
@@ -556,11 +584,11 @@ smartquiz:
 
 ## 12. Ranh giới
 
-| Không bao giờ                                                 | Lý do                                  |
-| ------------------------------------------------------------- | -------------------------------------- |
-| Gọi LLM trực tiếp trong Core                                  | Tách concern, cost centralized ở AI    |
-| Cài thuật toán cheat detect trong Core                         | Proctoring owner                        |
-| Verify password / issue JWT                                    | Auth owner                              |
-| Ghi trực tiếp vào `proctoring.*` schema                       | Cross-schema write cấm                  |
-| Consume Kafka mà không dedupe `processed_events`              | Duplicate processing                    |
-| Gọi ai-service không qua circuit breaker / timeout            | AI down sẽ đóng cả Core                  |
+| Không bao giờ                                      | Lý do                               |
+| -------------------------------------------------- | ----------------------------------- |
+| Gọi LLM trực tiếp trong Core                       | Tách concern, cost centralized ở AI |
+| Cài thuật toán cheat detect trong Core             | Proctoring owner                    |
+| Verify password / issue JWT                        | Auth owner                          |
+| Ghi trực tiếp vào `proctoring.*` schema            | Cross-schema write cấm              |
+| Consume Kafka mà không dedupe `processed_events`   | Duplicate processing                |
+| Gọi ai-service không qua circuit breaker / timeout | AI down sẽ đóng cả Core             |

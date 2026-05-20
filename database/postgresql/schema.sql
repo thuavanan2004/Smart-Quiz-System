@@ -14,12 +14,7 @@
 --   - proctoring : Proctoring service (cheat L1-L3)
 --
 -- Doc tham chiếu:
---   - docs/database.md
---   - docs/adr/ADR-003 (scope DATN), ADR-004 (drop Mongo), ADR-005 (drop CH),
---     ADR-006 (AI Combo A), ADR-007 (pgvector)
---
--- Production-grade DDL (multi-tenant, ClickHouse, Mongo, ES, IRT, appeals...)
--- được lưu ở docs/archive/production-design/ và KHÔNG áp dụng cho DATN.
+--   - database/postgresql/README.md (schema ownership + role grants + migration)
 --
 -- MỤC LỤC
 --   1.  Extensions
@@ -39,7 +34,7 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
-CREATE EXTENSION IF NOT EXISTS vector;    -- pgvector — ADR-007
+CREATE EXTENSION IF NOT EXISTS vector;    -- pgvector
 
 
 -- =============================================================================
@@ -121,7 +116,7 @@ CREATE TYPE core.document_status AS ENUM ('UPLOADED','EXTRACTING','READY','FAILE
 CREATE TYPE core.gen_job_status  AS ENUM ('QUEUED','RUNNING','DONE','FAILED');
 
 -- -----------------------------------------------------------------------------
--- 4.2. Documents (cho feature upload → sinh đề — ADR-006 §1)
+-- 4.2. Documents (cho feature upload → sinh đề)
 --       Đặt trước `questions` vì `questions.source_document_id` tham chiếu.
 -- -----------------------------------------------------------------------------
 
@@ -143,7 +138,7 @@ CREATE INDEX ix_documents_uploader ON core.documents(uploaded_by, created_at DES
 CREATE INDEX ix_documents_status   ON core.documents(status) WHERE status <> 'READY';
 
 -- -----------------------------------------------------------------------------
--- 4.3. Questions (+ embedding 384d cho pgvector — ADR-004, ADR-007)
+-- 4.3. Questions (+ embedding 384d cho pgvector)
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE core.questions (
@@ -232,7 +227,7 @@ CREATE TABLE core.exam_assignments (
 CREATE INDEX ix_assignments_student ON core.exam_assignments(student_id);
 
 -- -----------------------------------------------------------------------------
--- 4.6. Attempts + Answers (+ state_version fencing — ADR-003 §3)
+-- 4.6. Attempts + Answers (+ state_version fencing)
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE core.exam_attempts (
@@ -265,14 +260,14 @@ CREATE TABLE core.attempt_answers (
     -- Metadata chấm điểm
     graded_by                   VARCHAR(16),                          -- RULE | AI | TEACHER (override)
     grading_provider            VARCHAR(16),                          -- gemini | ollama | null (RULE)
-    -- AI tutor explanation — ADR-006 §2
+    -- AI tutor explanation
     ai_explanation              TEXT,
     ai_explanation_status       VARCHAR(16),                          -- PENDING | READY | FAILED | SKIPPED
-    -- AI essay detection — ADR-006 §3
+    -- AI essay detection
     ai_detection_score          NUMERIC(5,4) CHECK (ai_detection_score IS NULL OR (ai_detection_score BETWEEN 0 AND 1)),
     ai_detection_method         VARCHAR(32),                          -- perplexity | stylometry | hybrid
     ai_detection_details        JSONB,
-    -- Teacher override (ADR-008 safety net khi AI fail / sai)
+    -- Teacher override (safety net khi AI fail / sai)
     teacher_override_score      NUMERIC(6,2),
     teacher_override_reason     TEXT,
     teacher_override_by         UUID,                                 -- auth.users.id (role TEACHER/ADMIN)
@@ -285,12 +280,12 @@ CREATE INDEX ix_answers_attempt ON core.attempt_answers(attempt_id);
 CREATE INDEX ix_answers_question ON core.attempt_answers(question_id);
 CREATE INDEX ix_answers_ai_detection_high ON core.attempt_answers(ai_detection_score DESC)
     WHERE ai_detection_score >= 0.7;
--- Danh sách essay cần teacher chấm tay khi AI degraded (ADR-008 tier 3)
+-- Danh sách essay cần teacher chấm tay khi AI degraded
 CREATE INDEX ix_answers_needs_human ON core.attempt_answers(graded_at NULLS FIRST)
     WHERE ai_explanation_status = 'FAILED' OR (graded_by IS NULL AND submitted_at IS NOT NULL);
 
 -- -----------------------------------------------------------------------------
--- 4.7. Stylometry baseline + LLM cache (AI Combo A — ADR-006, ADR-007)
+-- 4.7. Stylometry baseline + LLM cache (AI Combo A)
 -- -----------------------------------------------------------------------------
 
 -- Baseline phong cách viết mỗi student (update dần sau mỗi essay đã confirmed)
@@ -316,7 +311,7 @@ CREATE INDEX ix_ai_cache_last_hit ON core.ai_cache(last_hit_at DESC);
 CREATE INDEX ix_ai_cache_model    ON core.ai_cache(model);
 
 -- -----------------------------------------------------------------------------
--- 4.8. Outbox + processed_events (transactional outbox — ADR-001, ADR-003 §3)
+-- 4.8. Outbox + processed_events (transactional outbox)
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE core.outbox (
@@ -344,7 +339,7 @@ CREATE INDEX ix_processed_events_topic ON core.processed_events(topic, processed
 
 
 -- =============================================================================
--- 5. ANALYTICS VIEWS (thay ClickHouse — ADR-005)
+-- 5. ANALYTICS VIEWS (thay ClickHouse)
 -- =============================================================================
 
 -- 5.1. Thống kê mỗi exam (count, avg, median, min/max score)

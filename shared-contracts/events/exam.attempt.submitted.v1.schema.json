@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/exam.attempt.submitted.v1.schema.json",
+  "title": "ExamAttemptSubmittedV1",
+  "description": "Attempt chuyển sang SUBMITTED. Trigger downstream chấm objective + analytics.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "exam.attempt.submitted.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["attempt_id", "exam_id", "student_id", "submitted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id":   { "type": "string", "format": "uuid" },
+        "exam_id":      { "type": "string", "format": "uuid" },
+        "student_id":   { "type": "string", "format": "uuid" },
+        "submitted_at": { "type": "string", "format": "date-time" },
+        "state_version": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Giá trị state_version sau khi transition (fencing token)."
+        },
+        "answer_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Số câu đã trả lời (không bắt buộc nhưng tiện cho analytics)."
+        }
+      }
+    }
+  }
+}

@@ -8,7 +8,6 @@
 -- Dữ liệu: 1 admin + 2 teacher + 5 student + 5 câu hỏi + 1 exam + 5 assignment.
 -- Đủ để smoke test end-to-end: login → start attempt → submit → grading.
 -- Password: "Password123!" — BCrypt cost 12.
--- Seed production-grade (organizations, plan_tier, argon2id...) đã archive.
 -- =============================================================================
 
 BEGIN;

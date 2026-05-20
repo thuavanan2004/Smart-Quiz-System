@@ -18,14 +18,13 @@
 # Sau khi Kafka healthy, tạo topic:
 #   bash ops/kafka/create-topics.sh
 #
-# Scope DATN (ADR-003): KHÔNG có MongoDB/ClickHouse/Elasticsearch/Flink/Apicurio.
-# Production stack đầy đủ: xem docs/archive/legacy-databases/docker-compose.yml.
+# Scope DATN: KHÔNG có MongoDB/ClickHouse/Elasticsearch/Flink/Apicurio.
 # =============================================================================
 
 services:
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL 16 + pgvector (ADR-007)
+  # PostgreSQL 16 + pgvector
   # ---------------------------------------------------------------------------
   postgres:
     image: pgvector/pgvector:pg16
@@ -49,7 +48,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # Redis 7 — cache + session + WS pubsub + rate limit + outbox lock
-  # DATN gộp thành 1 instance (production tách 2: hot vs cache — archive).
+  # DATN gộp thành 1 instance.
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -75,7 +74,7 @@ services:
   # Kafka 3.8 (KRaft mode — không cần Zookeeper riêng)
   # ---------------------------------------------------------------------------
   kafka:
-    image: bitnami/kafka:3.8
+    image: bitnamilegacy/kafka:3.8.0
     container_name: sq-kafka
     environment:
       # KRaft
@@ -122,7 +121,7 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Ollama (optional — AI fallback tier 2, ADR-008)
+  # Ollama (optional — AI fallback tier 2)
   # Bật bằng:
   #   docker compose -f infra/docker-compose.dev.yml --profile ai-fallback up -d ollama
   # Pull model lần đầu (~4GB):

@@ -2,7 +2,7 @@
 
 > **Port**: 8103 · **Ngôn ngữ**: Python 3.12 + FastAPI · **Stateless** (không DB riêng, dùng `core.ai_cache` + `core.student_writing_profiles` qua role `ai_reader`).
 
-Cung cấp 5 năng lực AI (Combo A, §9 scope-datn):
+Cung cấp 5 năng lực AI (Combo A, §8 scope-datn):
 1. **Chấm essay** (gọi LLM với rubric).
 2. **Sinh câu hỏi từ chủ đề** (manual).
 3. **Sinh câu hỏi từ tài liệu** (RAG pipeline).
@@ -455,7 +455,7 @@ async def update_profile(student_id, text):
 - **Retry**: 1 lần nếu validate fail hoặc model trả empty.
 - **Dedupe nội bộ** (trong cùng batch output): cosine pairwise > 0.95 → giữ câu đầu.
 
-## 6. Cấu hình (ADR-008 free-tier strategy)
+## 6. Cấu hình (free-tier strategy)
 
 `config.yaml`:
 ```yaml
@@ -584,7 +584,7 @@ detect ollama unreachable → chấp nhận degraded tier 3 cho phần đó.
   - `ai_detection_score_histogram`
   - `ai_kafka_consumer_lag_seconds{topic}`
 
-## 9. Cost — mục tiêu $0 (ADR-008)
+## 9. Cost — mục tiêu $0
 
 Budget DATN = 0 đồng. Dùng Gemini free tier (1500 req/day, 1M token/day) làm
 primary, Ollama local fallback khi quota/rate hit, pre-warm `core.ai_cache`

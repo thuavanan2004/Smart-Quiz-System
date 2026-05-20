@@ -1,106 +1,64 @@
-# Redis 7 - Setup Local
+# Redis — SmartQuizSystem (DATN)
 
-## Files
+> **Image**: `redis:7-alpine` · **Persistence**: AOF `appendfsync=everysec` + RDB · **1 instance**
 
-| File | Mô tả |
-| ---- | ----- |
-| `schema.md`   | **Tài liệu key pattern** (không phải SQL schema) - reference cho dev |
-| `seed.redis`  | Script seed dữ liệu mẫu (session, cache, leaderboard...) |
+Redis là supporting infra cho session, cache, WS pubsub, rate-limit, outbox lock.
+**Không phải nguồn truth cho đáp án thi** — PG + transactional outbox là nguồn
+truth (RPO ≤30s). Redis chỉ là cache write-through.
 
-## Tổng hợp Key Pattern
+DATN scope dùng **1 Redis instance duy nhất** (production tách 2 cluster hot/cache,
+xem future work).
 
-Redis không có "schema" như SQL. Hệ thống dùng 5 nhóm key:
+## 1. Files
 
-| Nhóm | Mục đích | Kiểu dữ liệu chính | Persistence |
-| ---- | -------- | ------------------ | ----------- |
-| 1. Session thi | `session:*`, `answers:*`, `q_order:*`, `adaptive:*` | Hash, List | **AOF fsync=always** (bắt buộc) |
-| 2. Cache nóng | `exam:config:*`, `question:*`, `user:profile:*` | String, Hash | RDB 5 phút đủ |
-| 3. Rate limit | `rate:login:*`, `rate:api:*`, `otp:*` | String counter | RDB |
-| 4. Pub/Sub | `ws:exam:*`, `cheat:alert:*`, `notification:*` | Channel / Stream | không persist |
-| 5. Leaderboard | `leaderboard:*`, `exam:stats:*` | Sorted Set, Hash | RDB |
+| File          | Mô tả                                                                |
+| ------------- | -------------------------------------------------------------------- |
+| `schema.md`   | Key pattern reference — mọi key DATN dùng phải có trong file này.     |
+| `seed.redis`  | Seed dữ liệu mẫu (1 session thi đang chạy + vài cache key).           |
 
-Đọc chi tiết trong [`schema.md`](./schema.md).
+## 2. Key layout (tóm tắt)
 
----
+| Key pattern                       | TTL              | Mục đích                                              |
+| --------------------------------- | ---------------- | ----------------------------------------------------- |
+| `jwks:cache:{service}`            | 1h               | Cache JWKS tại mỗi service consumer                   |
+| `session:ws:{attempt_id}`         | thời gian thi    | Mapping attempt → WS session id (push từ consumer)    |
+| `attempt:timer:{attempt_id}`      | thời gian thi    | Server-authoritative remaining time                   |
+| `rate:login:{ip}`                 | 1m               | Rate limit login (10/min)                             |
+| `rate:api:{user_id}`              | 1m               | Rate limit API (100/min)                              |
+| `lock:outbox:{service}`           | 30s              | Leader election cho outbox relayer (renew 10s/lần)    |
+| `cache:question:{id}:v{version}`  | 10m              | Cache question content (reduce PG read khi đang thi)  |
 
-## Cách 1: Docker
+Chi tiết kiểu dữ liệu + ghi chú trong [`schema.md`](./schema.md).
+
+## 3. Khởi tạo
 
 ```bash
-docker compose up -d redis
+docker compose -f infra/docker-compose.dev.yml up -d redis
 
-# Seed
-docker exec -i sq_redis redis-cli < seed.redis
+# Seed (optional, chỉ cần khi muốn test session resume)
+docker exec -i sq-redis redis-cli < database/redis/seed.redis
 
-# Test
-docker exec -it sq_redis redis-cli DBSIZE
-docker exec -it sq_redis redis-cli HGETALL session:f0000000-0000-0000-0000-000000000003
+# Verify
+docker exec sq-redis redis-cli DBSIZE
 ```
 
-## Cách 2: Native Windows
-
-Redis không có build chính thức cho Windows. Có 3 options:
-
-### Option A - Dùng WSL2 (KHUYẾN NGHỊ)
-```bash
-# Trong WSL Ubuntu:
-sudo apt update && sudo apt install redis-server
-sudo service redis-server start
-```
-
-### Option B - Memurai (Redis-compatible cho Windows)
-- Download: https://www.memurai.com/
-- Cài như service, port 6379 mặc định
-
-### Option C - Microsoft's unmaintained Redis port
-- https://github.com/microsoftarchive/redis/releases (outdated, không nên dùng production)
-
-### Seed dữ liệu
-```bash
-cd D:\SmartQuizSystem\database\redis
-redis-cli -h localhost -p 6379 < seed.redis
-```
-
----
-
-## Chuỗi kết nối
+## 4. Connection string
 
 ```
 redis://localhost:6379/0
 ```
 
-## GUI Client
+## 5. GUI client
 
-- **RedisInsight** (official, free): https://redis.com/redis-enterprise/redis-insight/
-- **Another Redis Desktop Manager**: https://github.com/qishibo/AnotherRedisDesktopManager
+- **RedisInsight** (official, free)
+- **Another Redis Desktop Manager**
 
-## Lệnh debug hữu ích
+## 6. Debug commands
 
 ```bash
-# Monitor realtime traffic
-redis-cli MONITOR
-
-# Scan key theo pattern (an toàn hơn KEYS)
 redis-cli --scan --pattern 'session:*'
-
-# Xem memory usage
+redis-cli TTL attempt:timer:<uuid>
+redis-cli HGETALL session:ws:<uuid>
+redis-cli MONITOR              # realtime traffic
 redis-cli INFO memory
-
-# Xem TTL của key
-redis-cli TTL session:abc123
-
-# Pub/Sub subscribe
-redis-cli SUBSCRIBE notification:user123
 ```
-
-## Cấu hình persistence production
-
-Trong `docker-compose.yml` hiện đang dùng `appendfsync everysec` (compromise dev). Production cho Nhóm 1 (session):
-
-```conf
-appendonly yes
-appendfsync always         # BẮT BUỘC cho session data
-auto-aof-rewrite-percentage 100
-auto-aof-rewrite-min-size 64mb
-```
-
-Nếu tách 2 instance (session vs cache), chỉ instance session mới cần `fsync=always`.

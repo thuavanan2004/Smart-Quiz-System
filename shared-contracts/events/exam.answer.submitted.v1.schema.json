@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/exam.answer.submitted.v1.schema.json",
+  "title": "ExamAnswerSubmittedV1",
+  "description": "Phát mỗi lần student submit 1 đáp án (via outbox). Core tự consume để refresh analytics view.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "exam.answer.submitted.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["attempt_id", "position", "answer_data", "submitted_at"],
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id":   { "type": "string", "format": "uuid" },
+        "exam_id":      { "type": "string", "format": "uuid" },
+        "student_id":   { "type": "string", "format": "uuid" },
+        "question_id":  { "type": "string", "format": "uuid" },
+        "position": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based position trong attempt."
+        },
+        "answer_data": {
+          "type": "object",
+          "description": "JSONB từ attempt_answers.answer_data. Shape phụ thuộc question.type.",
+          "additionalProperties": true
+        },
+        "submitted_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

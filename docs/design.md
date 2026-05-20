@@ -1,8 +1,7 @@
 # SmartQuizSystem — Kiến trúc tổng (DATN)
 
 > **Scope**: Tài liệu này mô tả kiến trúc thực tế được implement trong khuôn khổ đồ án tốt nghiệp.
-> Phạm vi tính năng đã chốt ở `docs/scope-datn.md`, quyết định kiến trúc ở `docs/adr/ADR-003-datn-scope.md`.
-> Thiết kế production đầy đủ được lưu trong `docs/archive/production-design/` để tham chiếu.
+> Phạm vi tính năng đã chốt ở `docs/scope-datn.md`.
 
 ## 1. Mục tiêu hệ thống
 
@@ -232,8 +231,6 @@ Nếu thấy vi phạm khi scaffold → push back và thảo luận lại bounda
 ## 12. Doc liên quan
 
 - **Scope**: `docs/scope-datn.md`
-- **DB**: `docs/database.md`
+- **DB**: `database/postgresql/README.md` (DDL: `database/postgresql/schema.sql`)
 - **Service design**: `docs/{auth,core,ai,proctoring}-service-design.md`
-- **ADR**: `docs/adr/ADR-00{1..7}-*.md`
 - **Operations**: `docs/RUNBOOK.md`
-- **Archive production**: `docs/archive/production-design/`

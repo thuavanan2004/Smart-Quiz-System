@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/_envelope.schema.json",
+  "title": "EventEnvelope",
+  "description": "Envelope chung cho mọi event Kafka SmartQuizSystem.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Dedupe key, ghi vào processed_events bởi consumer."
+    },
+    "event_type": {
+      "type": "string",
+      "description": "Trùng tên Kafka topic, ví dụ exam.attempt.submitted.v1.",
+      "pattern": "^[a-z]+(\\.[a-z_]+)+\\.v[0-9]+$"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Thời điểm event xảy ra (RFC 3339, UTC)."
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Tăng monotonic mỗi lần payload schema thay đổi tương thích."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Body event, schema riêng per topic."
+    }
+  }
+}

@@ -2,7 +2,7 @@
 # =============================================================================
 # ops/gen-jwt-keypair.sh — sinh RSA 2048 keypair cho Auth service (DATN)
 # =============================================================================
-# Chạy 1 lần lúc setup project. Không rotate trong vòng đời DATN (ADR-003).
+# Chạy 1 lần lúc setup project. Không rotate trong vòng đời DATN.
 # Output:
 #   ops/jwt/private.pem   (PKCS#8, Auth service dùng để sign JWT)
 #   ops/jwt/public.pem    (X.509 SubjectPublicKeyInfo, phát qua JWKS)

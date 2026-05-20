@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/tutor.explanation.result.v1.schema.json",
+  "title": "TutorExplanationResultV1",
+  "description": "AI publish 1 event per wrong answer (không batch result, để Core update WS streaming).",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "tutor.explanation.result.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["request_event_id", "attempt_id", "position", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "request_event_id": { "type": "string", "format": "uuid" },
+        "attempt_id":       { "type": "string", "format": "uuid" },
+        "position":         { "type": "integer", "minimum": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["READY", "FAILED"]
+        },
+        "explanation": {
+          "type": ["string", "null"],
+          "description": "Markdown ngắn (≤ 150 từ). Null nếu status=FAILED."
+        },
+        "study_tip": {
+          "type": ["string", "null"],
+          "description": "1 gợi ý ôn tập."
+        },
+        "related_concept": {
+          "type": ["string", "null"],
+          "description": "Slug khái niệm liên quan, FE có thể link sang."
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["gemini", "ollama", "claude", "openai", "cache"]
+        },
+        "error": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code":    { "type": "string" },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

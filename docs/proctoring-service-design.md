@@ -1,8 +1,8 @@
 # Proctoring Service — Design (DATN)
 
 > **Port**: 8104 · **Ngôn ngữ**: Java 21 + Spring Boot 3.3 · **DB schema**: `proctoring`
-> Thay thế cho "Cheating Detection" trong docs production. DATN scope **chỉ L1–L3**
-> (tab blur, paste, timing anomaly). L4–L6 (ML behavioral, video, graph) là future work.
+> DATN scope **chỉ L1–L3** (tab blur, paste, timing anomaly). L4–L6 (ML behavioral,
+> video, graph) là future work.
 
 ## 1. Trách nhiệm
 
@@ -21,7 +21,7 @@
 
 ## 2. Entity & DB
 
-Xem `docs/database.md` §5 cho DDL. Tóm tắt:
+Xem `database/postgresql/schema.sql` §6 (schema `proctoring`) cho DDL. Tóm tắt:
 
 - `proctoring.cheat_events` — raw log (append-only, audit).
 - `proctoring.cheat_alerts` — aggregated rule hit, có flow review của teacher.
@@ -363,5 +363,3 @@ smartquiz:
 - L6: graph analysis — phát hiện nhóm student có pattern giống nhau.
 - Export report PDF / Excel cho phụ huynh.
 - Realtime dashboard cho coi thi monitor tất cả attempt cùng lúc.
-
-Đã thiết kế chi tiết trong `docs/archive/production-design/cheating-detection-service-design.md`.

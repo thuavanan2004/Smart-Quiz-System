@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/cheat.event.raw.v1.schema.json",
+  "title": "CheatEventRawV1",
+  "description": "Raw event do Core WebSocket handler forward thẳng vào Kafka (KHÔNG qua outbox, vì throughput cao và mất 1-2 event chấp nhận được).",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "cheat.event.raw.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["attempt_id", "student_id", "kind", "client_ts"],
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": { "type": "string", "format": "uuid" },
+        "student_id": { "type": "string", "format": "uuid" },
+        "exam_id":    { "type": "string", "format": "uuid" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "TAB_BLUR",
+            "TAB_FOCUS",
+            "FULLSCREEN_EXIT",
+            "PASTE",
+            "COPY",
+            "TIMING_ANOMALY",
+            "HEARTBEAT_LOST"
+          ],
+          "description": "Loại event raw từ client hoặc Core tự phát hiện."
+        },
+        "client_ts": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp do browser ghi. Có thể lệch giờ server — chỉ tham khảo."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "WebSocket session id, dùng để correlate với proctoring_sessions."
+        },
+        "data": {
+          "type": "object",
+          "description": "Field-specific. Ví dụ PASTE → {target_field, char_count}; TIMING_ANOMALY → {position, delta_ms, expected_min_ms}.",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

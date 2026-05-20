@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/question.generation.result.v1.schema.json",
+  "title": "QuestionGenerationResultV1",
+  "description": "AI trả batch câu hỏi cho 1 job. Core validate + dedupe pgvector + INSERT vào question bank, update job status.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "question.generation.result.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["request_event_id", "job_id", "status", "questions", "errors"],
+      "additionalProperties": false,
+      "properties": {
+        "request_event_id": { "type": "string", "format": "uuid" },
+        "job_id":           { "type": "string", "format": "uuid" },
+        "status": {
+          "type": "string",
+          "enum": ["SUCCESS", "PARTIAL", "FAILED"]
+        },
+        "questions": {
+          "type": "array",
+          "description": "Có thể rỗng nếu status=FAILED.",
+          "items": {
+            "type": "object",
+            "required": ["type", "difficulty", "content"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["MCQ_SINGLE", "MCQ_MULTI", "TRUE_FALSE", "SHORT_ANSWER", "ESSAY"]
+              },
+              "difficulty": {
+                "type": "string",
+                "enum": ["EASY", "MEDIUM", "HARD"]
+              },
+              "content": {
+                "type": "object",
+                "description": "Sẽ ghi vào questions.content JSONB. Shape tùy type (xem core-service-design §3.1).",
+                "additionalProperties": true,
+                "properties": {
+                  "stem":             { "type": "string" },
+                  "options":          { "type": "array", "items": { "type": "string" } },
+                  "correct_answer":   {},
+                  "explanation":      { "type": "string" },
+                  "rubric":           { "type": "string" },
+                  "accepted_variants": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "topic":         { "type": "string" },
+                  "bloom_level":   { "type": "string" },
+                  "source_passage": {
+                    "type": "string",
+                    "description": "Đoạn document được dùng làm căn cứ (RAG)."
+                  }
+                }
+              },
+              "embedding": {
+                "type": ["array", "null"],
+                "description": "384-d vector (MiniLM). Nếu null, Core sẽ tự gọi AI /embed.",
+                "items": { "type": "number" },
+                "minItems": 384,
+                "maxItems": 384
+              }
+            }
+          }
+        },
+        "errors": {
+          "type": "array",
+          "description": "Lỗi per-item (ví dụ validate fail) hoặc lỗi cấp job.",
+          "items": {
+            "type": "object",
+            "required": ["code", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" },
+              "index":   { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["gemini", "ollama", "claude", "openai", "cache"]
+        },
+        "tokens_used": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

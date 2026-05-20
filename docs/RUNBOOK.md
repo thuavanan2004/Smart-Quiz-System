@@ -586,7 +586,6 @@ echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
 
 - **Convention code + NFR**: [`CLAUDE.md`](../CLAUDE.md)
 - **Kiến trúc tổng**: [`docs/design.md`](design.md)
-- **Database reference**: [`docs/database.md`](database.md)
+- **Database reference**: [`database/postgresql/README.md`](../database/postgresql/README.md) (DDL: `database/postgresql/schema.sql`)
 - **Service design từng service**: `docs/<name>-service-design.md`
-- **ADRs**: [`docs/adr/`](adr/)
 - **Event schemas + topics**: [`shared-contracts/avro/TOPICS.md`](../shared-contracts/avro/TOPICS.md)

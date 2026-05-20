@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartquiz.local/events/cheat.alert.v1.schema.json",
+  "title": "CheatAlertV1",
+  "description": "Proctoring publish alert tổng hợp (via outbox). Core consume → WS push cho teacher monitor + student.",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "schema_version", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "const": "cheat.alert.v1" },
+    "occurred_at":    { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "payload": {
+      "type": "object",
+      "required": ["alert_id", "attempt_id", "student_id", "rule_name", "severity", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "alert_id":   { "type": "string", "format": "uuid" },
+        "attempt_id": { "type": "string", "format": "uuid" },
+        "student_id": { "type": "string", "format": "uuid" },
+        "exam_id":    { "type": "string", "format": "uuid" },
+        "rule_name": {
+          "type": "string",
+          "enum": [
+            "EXCESSIVE_TAB_BLUR",
+            "FULLSCREEN_EXIT",
+            "SMALL_PASTE",
+            "LARGE_PASTE",
+            "FREQUENT_PASTE",
+            "FAST_ANSWER_PATTERN",
+            "HEARTBEAT_LOST"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["INFO", "WARN", "HIGH"]
+        },
+        "evidence": {
+          "type": "object",
+          "description": "Tổng hợp số liệu rule engine dùng để defend alert. Field tùy rule.",
+          "additionalProperties": true,
+          "properties": {
+            "count":            { "type": "integer", "minimum": 0 },
+            "window_seconds":   { "type": "integer", "minimum": 0 },
+            "threshold":        { "type": "number" },
+            "sample_event_ids": {
+              "type": "array",
+              "items": { "type": "string", "format": "uuid" },
+              "description": "Tới 10 event_id raw làm bằng chứng."
+            }
+          }
+        }
+      }
+    }
+  }
+}

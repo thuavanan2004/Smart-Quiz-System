@@ -1,135 +1,146 @@
-# PostgreSQL 16 - Setup Local
+# PostgreSQL — SmartQuizSystem (DATN)
 
-## Files
+> **Image**: `pgvector/pgvector:pg16` · **Encoding**: UTF-8 · **Timezone**: UTC
 
-| File | Mô tả |
-| ---- | ----- |
-| `schema.sql` | Toàn bộ schema (ENUM, bảng, FK, index, outbox, fencing token). Single source of truth. |
-| `seed.sql`   | Dữ liệu mẫu: 3 org, 8 users, 3 exams, 3 attempts, certificates... (chỉ dev local) |
+`schema.sql` là **single source of truth** cho DDL DATN. `seed.sql` là dữ liệu
+mẫu để smoke test (1 admin + 2 teacher + 5 student + 1 exam).
 
-## Tổng hợp Schema
+## 1. Files
 
-**30 bảng / 3 ENUM types:**
+| File         | Mô tả                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| `schema.sql` | Toàn bộ DDL: extensions, 3 schema (auth/core/proctoring), ENUM, bảng, FK, index, view, outbox. |
+| `seed.sql`   | Dữ liệu mẫu cho dev local. Password chung `Password123!` (BCrypt cost 12).                  |
 
-| Nhóm | Bảng |
-| ---- | ---- |
-| Tổ chức & Người dùng | `organizations`, `users`, `user_organizations`, `oauth_providers`, `refresh_tokens` |
-| **RBAC động** | `roles`, `permissions`, `role_permissions` |
-| Bài thi & Cấu hình | `subjects`, `exams`, `exam_sections`, `exam_questions`, `exam_enrollments` |
-| Lượt thi | `exam_attempts` (có `state_version` fencing token), `attempt_answers` |
-| Chống gian lận | `cheat_events`, `proctoring_sessions` |
-| Kết quả | `grading_rubrics`, `attempt_feedback`, `certificates` |
-| **Auth mở rộng** | `password_history`, `mfa_backup_codes`, `email_verification_tokens`, `audit_log_auth` |
-| **AI Service** | `ai_jobs`, `ai_cost_ledger`, `ai_budgets` |
-| **Cheating mở rộng** | `cheat_review_queue`, `cheat_appeals` |
-| **Reliability (ADR-001)** | `outbox`, `processed_events` |
+## 2. Schema ownership
 
-**ENUM:** `exam_status`, `attempt_status`, `cheat_event_type`
+| Schema       | Owner service | Service khác truy cập                                                      |
+| ------------ | ------------- | -------------------------------------------------------------------------- |
+| `auth`       | Auth          | Không — service khác verify JWT qua JWKS, không đọc DB                     |
+| `core`       | Core          | AI đọc `documents.text_content`, `questions.embedding` (role `ai_reader`)  |
+| `proctoring` | Proctoring    | Core query read-only `cheat_alerts` cho teacher UI                         |
 
-**Extensions:** `pgcrypto` (UUID), `citext`, `pg_trgm`
+**DB role** (gợi ý — implement khi scaffold service):
 
----
+- `auth_app` — full trên `auth.*`
+- `core_app` — full trên `core.*`
+- `proctoring_app` — full trên `proctoring.*`
+- `ai_reader` — SELECT `core.documents`, `core.questions`, `core.student_writing_profiles`; INSERT/UPDATE `core.ai_cache`; UPDATE `core.student_writing_profiles`.
 
-## Cách 1: Docker (nhanh nhất)
+## 3. Danh sách bảng
 
-```bash
-# Từ thư mục database/
-docker compose up -d postgres
+| Schema       | Bảng                            | Rows demo ước tính |
+| ------------ | ------------------------------- | ------------------ |
+| `auth`       | `users`, `refresh_tokens`       | ~100 / ~500 rolling |
+| `core`       | `questions`                     | ~500 (gồm AI-gen)  |
+| `core`       | `exams`, `exam_questions`, `exam_assignments` | ~30 / ~600 / ~300 |
+| `core`       | `exam_attempts`, `attempt_answers` | ~500 / ~10000   |
+| `core`       | `documents`, `question_generation_jobs` | ~20 / ~50  |
+| `core`       | `student_writing_profiles`, `ai_cache` | ~80 / ~2000 |
+| `core`       | `outbox`, `processed_events`    | rolling            |
+| `proctoring` | `cheat_events`, `cheat_alerts`, `proctoring_sessions` | ~20000 / ~300 / ~500 |
 
-# Kiểm tra
-docker exec -it sq_postgres psql -U postgres -d smartquiz -c "\dt"
-```
+Tổng < 100MB DB size cho demo đầy đủ. PG 1 instance dư sức.
 
-`schema.sql` + `seed.sql` đã được mount vào `docker-entrypoint-initdb.d/` → chạy tự động lần đầu khi volume trống.
-
-## Cách 2: Cài native trên Windows
-
-### Bước 1 - Download & Install
-
-- Tải installer: https://www.postgresql.org/download/windows/
-- Version: **PostgreSQL 16**
-- Khi cài: đặt password cho user `postgres`, giữ port `5432`
-
-### Bước 2 - Tạo database
+## 4. Khởi tạo nhanh (Docker)
 
 ```bash
-# Mở PowerShell / CMD
-psql -U postgres
+# Bật stack infra
+docker compose -f infra/docker-compose.dev.yml up -d
 
-# Trong psql shell:
-CREATE DATABASE smartquiz;
-\c smartquiz
-\q
+# Init schema + seed (1 lần sau khi PG container healthy)
+docker exec -i sq-postgres psql -U postgres -d smartquiz < database/postgresql/schema.sql
+docker exec -i sq-postgres psql -U postgres -d smartquiz < database/postgresql/seed.sql
+
+# Verify
+docker exec sq-postgres psql -U postgres -d smartquiz -c "SELECT count(*) FROM auth.users;"
 ```
 
-### Bước 3 - Chạy schema + seed
+## 5. Native Postgres (không Docker)
 
 ```bash
-cd D:\SmartQuizSystem\database\postgresql
+# Tạo DB
+psql -U postgres -c "CREATE DATABASE smartquiz;"
 
-psql -U postgres -d smartquiz -f schema.sql
-psql -U postgres -d smartquiz -f seed.sql
+# Init
+psql -U postgres -d smartquiz -f database/postgresql/schema.sql
+psql -U postgres -d smartquiz -f database/postgresql/seed.sql
 ```
 
-### Bước 4 - Verify
+Yêu cầu PG 16 + pgvector extension. Trên Windows dùng installer chính thức từ
+postgresql.org rồi `CREATE EXTENSION vector` (cần build pgvector hoặc dùng image
+Docker cho gọn).
 
-```bash
-psql -U postgres -d smartquiz -c "SELECT name FROM organizations;"
-psql -U postgres -d smartquiz -c "SELECT email FROM users;"
+## 6. Migration workflow (khi service Spring Boot chạy)
+
+```
+services/
+├── auth/src/main/resources/db/migration/
+│   ├── V20260501__init_users.sql
+│   └── V20260502__refresh_tokens.sql
+├── core/src/main/resources/db/migration/
+│   ├── V20260501__init_core_schema.sql
+│   ├── V20260502__questions_and_exams.sql
+│   ├── V20260503__attempts.sql
+│   ├── V20260504__documents_and_ai.sql
+│   ├── V20260505__outbox.sql
+│   └── V20260506__analytics_views.sql
+└── proctoring/src/main/resources/db/migration/
+    ├── V20260501__init_proctoring_schema.sql
+    ├── V20260502__cheat_events_and_alerts.sql
+    └── V20260503__outbox.sql
 ```
 
----
+Flyway config per service: `spring.flyway.schemas={auth|core|proctoring}`,
+`default-schema=${service}`.
 
-## Tài khoản seed (dùng để test app)
+`schema.sql` ở repo này là **baseline cho dev/demo**. Khi service thật chạy
+Flyway, **không sửa trực tiếp `schema.sql`** — tạo migration mới trong thư mục
+service tương ứng.
 
-| Email | Role | Org |
-| ----- | ---- | --- |
-| `admin@smartquiz.vn` | admin | HUST |
-| `gv.nguyen@hust.edu.vn` | instructor | HUST |
-| `gv.tran@hust.edu.vn` | instructor | HUST |
-| `hs.le@hust.edu.vn` | student | HUST |
-| `hs.pham@hust.edu.vn` | student | HUST |
-| `hs.hoang@hust.edu.vn` | student | HUST |
-| `proctor@hust.edu.vn` | proctor | HUST |
-| `teacher@global.vn` | instructor | Global English |
+## 7. Backup (DATN scope)
 
-> Password hash trong seed là **giả (mock)**. Khi phát triển auth service, hãy UPDATE lại password hash thật bằng Argon2id.
+- Dev/demo: `pg_dump -Fc smartquiz > backup-$(date +%F).dump` thỉnh thoảng.
+- Không cần PITR, không cần replica.
 
----
-
-## Chuỗi kết nối
+## 8. Connection string
 
 ```
 postgresql://postgres:postgres@localhost:5432/smartquiz
 ```
 
-## GUI Client khuyến nghị
+## 9. GUI client
 
 - **pgAdmin 4** (official)
-- **DBeaver** (miễn phí, đa DB)
+- **DBeaver** (miễn phí)
 - **TablePlus** (Windows/Mac, có trial)
 
-## Tham khảo query
+## 10. Query mẫu
 
 ```sql
--- Bài thi đang mở
-SELECT id, title, status, starts_at FROM exams WHERE status IN ('published', 'active');
+-- Exam đang publish
+SELECT id, title, status, open_at, close_at
+FROM core.exams
+WHERE status = 'PUBLISHED';
 
--- Lượt thi của 1 user
-SELECT e.title, a.status, a.percentage_score, a.passed
-FROM exam_attempts a
-JOIN exams e ON a.exam_id = e.id
-WHERE a.user_id = 'a0000000-0000-0000-0000-000000000004';
+-- Attempt của 1 student
+SELECT e.title, a.status, a.total_score
+FROM core.exam_attempts a
+JOIN core.exams e ON a.exam_id = e.id
+WHERE a.student_id = '<uuid>';
 
--- Leaderboard
-SELECT u.full_name, a.percentage_score
-FROM exam_attempts a
-JOIN users u ON a.user_id = u.id
-WHERE a.exam_id = 'c0000000-0000-0000-0000-000000000001'
-  AND a.status = 'graded'
-ORDER BY a.percentage_score DESC;
+-- Top score 1 exam (thay leaderboard)
+SELECT u.full_name, a.total_score
+FROM core.exam_attempts a
+JOIN auth.users u ON a.student_id = u.id
+WHERE a.exam_id = '<uuid>' AND a.status = 'GRADED'
+ORDER BY a.total_score DESC
+LIMIT 10;
+
+-- Câu hỏi tương tự (pgvector)
+SELECT id, content->>'stem' AS stem,
+       1 - (embedding <=> '<query_vector>') AS similarity
+FROM core.questions
+ORDER BY embedding <=> '<query_vector>'
+LIMIT 5;
 ```
-
-## Ghi chú về migration sau này
-
-Khi service thật bắt đầu chạy Flyway, schema này trở thành **baseline**. Tạo migration mới theo convention Flyway (`V<timestamp>__<description>.sql`) trong thư mục riêng của từng service — **không sửa trực tiếp `schema.sql`** (để `docker-entrypoint-initdb.d/` vẫn clone được môi trường local từ đầu).
